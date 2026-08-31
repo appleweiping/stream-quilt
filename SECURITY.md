@@ -1,0 +1,26 @@
+# Security policy
+
+## Reporting
+
+Use GitHub private vulnerability reporting instead of a public issue. Include a minimal reproduction,
+affected version, impact, and suggested mitigation. You should receive an acknowledgement within
+seven days.
+
+## Trust boundaries
+
+Stream Quilt reads local JSON/JSONL and writes local JSON/HTML. It does not fetch media, execute event
+payloads, contact external services, or render user-provided HTML. Stream names, event IDs,
+modalities, and other rendered labels are escaped in reports.
+
+The parser rejects duplicate JSON keys and non-finite numeric constants. Event metadata is validated
+as finite JSON, and aligners snapshot clock maps and nested event data before retaining them.
+
+The configured `max_events_per_window` and `max_output_windows` are resource guards, not complete
+input quotas. Applications accepting untrusted data should also limit file size, line length, event
+count, nesting depth, and the size of each `data` object before calling the library.
+
+Window emission is transactional. A resource-limit exception leaves the triggering event and its
+watermark update uncommitted, so callers can fail closed without losing an unreturned earlier window.
+
+Alignment does not establish provenance or authenticity. Sign and verify events before ingestion when
+the source affects safety, access control, billing, or compliance.

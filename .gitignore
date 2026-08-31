@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+build/
+dist/
+stream-quilt-output/
+/demo-output/
+/.demo-output/
+.edge-profile*/

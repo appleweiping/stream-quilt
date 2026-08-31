@@ -1,0 +1,287 @@
+{
+  "accepted_late_event_ids": [],
+  "dropped_event_ids": [],
+  "gaps": [
+    {
+      "end_ms": 2000.0,
+      "expected_ms": 500.0,
+      "observed_ms": 1000.0,
+      "start_ms": 1500.0,
+      "stream": "camera"
+    }
+  ],
+  "unassigned_event_ids": [],
+  "windows": [
+    {
+      "complete": true,
+      "end_ms": 1000.0,
+      "events": [
+        {
+          "data": {
+            "label": "entrance"
+          },
+          "duration_ms": 420.0,
+          "id": "v0",
+          "modality": "video",
+          "stream": "camera",
+          "timestamp_ms": 0.0
+        },
+        {
+          "data": {
+            "rms": 0.14
+          },
+          "duration_ms": 480.0,
+          "id": "a0",
+          "modality": "audio",
+          "stream": "microphone",
+          "timestamp_ms": 0.0
+        },
+        {
+          "data": {
+            "text": "vehicle entering"
+          },
+          "duration_ms": 240.0,
+          "id": "t0",
+          "modality": "text",
+          "stream": "transcript",
+          "timestamp_ms": 120.0
+        },
+        {
+          "data": {
+            "label": "merge"
+          },
+          "duration_ms": 420.0,
+          "id": "v1",
+          "modality": "video",
+          "stream": "camera",
+          "timestamp_ms": 500.0
+        },
+        {
+          "data": {
+            "rms": 0.18
+          },
+          "duration_ms": 480.0,
+          "id": "a1",
+          "modality": "audio",
+          "stream": "microphone",
+          "timestamp_ms": 500.0
+        },
+        {
+          "data": {
+            "text": "braking"
+          },
+          "duration_ms": 260.0,
+          "id": "t1",
+          "modality": "text",
+          "stream": "transcript",
+          "timestamp_ms": 880.0
+        }
+      ],
+      "index": 0,
+      "missing_streams": [],
+      "modalities": [
+        "audio",
+        "text",
+        "video"
+      ],
+      "start_ms": 0.0
+    },
+    {
+      "complete": true,
+      "end_ms": 1500.0,
+      "events": [
+        {
+          "data": {
+            "label": "merge"
+          },
+          "duration_ms": 420.0,
+          "id": "v1",
+          "modality": "video",
+          "stream": "camera",
+          "timestamp_ms": 500.0
+        },
+        {
+          "data": {
+            "rms": 0.18
+          },
+          "duration_ms": 480.0,
+          "id": "a1",
+          "modality": "audio",
+          "stream": "microphone",
+          "timestamp_ms": 500.0
+        },
+        {
+          "data": {
+            "text": "braking"
+          },
+          "duration_ms": 260.0,
+          "id": "t1",
+          "modality": "text",
+          "stream": "transcript",
+          "timestamp_ms": 880.0
+        },
+        {
+          "data": {
+            "label": "stop"
+          },
+          "duration_ms": 420.0,
+          "id": "v2",
+          "modality": "video",
+          "stream": "camera",
+          "timestamp_ms": 1000.0
+        },
+        {
+          "data": {
+            "rms": 0.52
+          },
+          "duration_ms": 480.0,
+          "id": "a2",
+          "modality": "audio",
+          "stream": "microphone",
+          "timestamp_ms": 1000.0
+        }
+      ],
+      "index": 1,
+      "missing_streams": [],
+      "modalities": [
+        "audio",
+        "text",
+        "video"
+      ],
+      "start_ms": 500.0
+    },
+    {
+      "complete": true,
+      "end_ms": 2000.0,
+      "events": [
+        {
+          "data": {
+            "text": "braking"
+          },
+          "duration_ms": 260.0,
+          "id": "t1",
+          "modality": "text",
+          "stream": "transcript",
+          "timestamp_ms": 880.0
+        },
+        {
+          "data": {
+            "label": "stop"
+          },
+          "duration_ms": 420.0,
+          "id": "v2",
+          "modality": "video",
+          "stream": "camera",
+          "timestamp_ms": 1000.0
+        },
+        {
+          "data": {
+            "rms": 0.52
+          },
+          "duration_ms": 480.0,
+          "id": "a2",
+          "modality": "audio",
+          "stream": "microphone",
+          "timestamp_ms": 1000.0
+        },
+        {
+          "data": {
+            "rms": 0.2
+          },
+          "duration_ms": 480.0,
+          "id": "a3",
+          "modality": "audio",
+          "stream": "microphone",
+          "timestamp_ms": 1500.0
+        },
+        {
+          "data": {
+            "text": "lane clear"
+          },
+          "duration_ms": 300.0,
+          "id": "t2",
+          "modality": "text",
+          "stream": "transcript",
+          "timestamp_ms": 1650.0
+        }
+      ],
+      "index": 2,
+      "missing_streams": [],
+      "modalities": [
+        "audio",
+        "text",
+        "video"
+      ],
+      "start_ms": 1000.0
+    },
+    {
+      "complete": true,
+      "end_ms": 2500.0,
+      "events": [
+        {
+          "data": {
+            "rms": 0.2
+          },
+          "duration_ms": 480.0,
+          "id": "a3",
+          "modality": "audio",
+          "stream": "microphone",
+          "timestamp_ms": 1500.0
+        },
+        {
+          "data": {
+            "text": "lane clear"
+          },
+          "duration_ms": 300.0,
+          "id": "t2",
+          "modality": "text",
+          "stream": "transcript",
+          "timestamp_ms": 1650.0
+        },
+        {
+          "data": {
+            "label": "clear"
+          },
+          "duration_ms": 420.0,
+          "id": "v3",
+          "modality": "video",
+          "stream": "camera",
+          "timestamp_ms": 2000.0
+        }
+      ],
+      "index": 3,
+      "missing_streams": [],
+      "modalities": [
+        "audio",
+        "text",
+        "video"
+      ],
+      "start_ms": 1500.0
+    },
+    {
+      "complete": false,
+      "end_ms": 3000.0,
+      "events": [
+        {
+          "data": {
+            "label": "clear"
+          },
+          "duration_ms": 420.0,
+          "id": "v3",
+          "modality": "video",
+          "stream": "camera",
+          "timestamp_ms": 2000.0
+        }
+      ],
+      "index": 4,
+      "missing_streams": [
+        "microphone",
+        "transcript"
+      ],
+      "modalities": [
+        "video"
+      ],
+      "start_ms": 2000.0
+    }
+  ]
+}

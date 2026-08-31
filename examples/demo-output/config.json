@@ -1,0 +1,25 @@
+{
+  "window_ms": 1000,
+  "hop_ms": 500,
+  "allowed_lateness_ms": 150,
+  "origin_ms": 0,
+  "required_streams": [
+    "camera",
+    "microphone",
+    "transcript"
+  ],
+  "offsets_ms": {
+    "camera": -40,
+    "microphone": 15,
+    "transcript": 0
+  },
+  "expected_cadence_ms": {
+    "camera": 500,
+    "microphone": 500,
+    "transcript": 750
+  },
+  "gap_factor": 1.6,
+  "late_policy": "reject",
+  "max_events_per_window": 100,
+  "max_output_windows": 100
+}

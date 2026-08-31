@@ -1,0 +1,30 @@
+name: Bug report
+description: Report reproducible alignment or watermark behavior
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Boundary reports are most useful with exact timestamps.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include expected and observed windows, completeness, gap, or late-event behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Paste minimal config JSON, event JSONL, and the exact command.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and Python
+      placeholder: Stream Quilt 0.1.0, Python 3.12.4
+    validations:
+      required: true
