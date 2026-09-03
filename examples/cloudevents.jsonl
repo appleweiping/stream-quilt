@@ -1,0 +1,2 @@
+{"specversion":"1.0","id":"frame-001","source":"urn:camera:front","type":"org.example.video.frame","time":"2026-01-02T03:04:05.250Z","stream":"camera","modality":"video","durationms":40,"data":{"objects":3}}
+{"specversion":"1.0","id":"audio-001","source":"urn:microphone:cabin","type":"org.example.audio.chunk","time":"2026-01-02T03:04:05.280Z","stream":"microphone","modality":"audio","durationms":20,"data":{"rms":0.31}}

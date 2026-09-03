@@ -1,12 +1,227 @@
-"""Immutable event, configuration, window, and diagnostic models."""
+"""Defensively immutable event, configuration, window, and diagnostic models."""
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+import json
+import math
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Any, Literal, TypeVar
+
+from stream_quilt.errors import ValidationError
+from stream_quilt.limits import (
+    MAX_EVENT_DATA_BYTES,
+    MAX_EVENTS,
+    MAX_EVENTS_PER_WINDOW,
+    MAX_JSON_DEPTH,
+    MAX_JSON_NODES,
+    MAX_MAPPING_ENTRIES,
+    MAX_OUTPUT_WINDOWS,
+    MAX_RESULT_GAPS,
+    MAX_STREAMS,
+    MAX_TEXT_LENGTH,
+)
 
 LatePolicy = Literal["reject", "drop", "accept"]
+_T = TypeVar("_T")
+_MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _label(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError(f"{name} must be a non-empty string")
+    text = value.strip()
+    if len(text) > MAX_TEXT_LENGTH:
+        raise ValidationError(f"{name} exceeds the {MAX_TEXT_LENGTH}-character limit")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValidationError(f"{name} must contain valid Unicode scalar values") from exc
+    if any(ord(character) < 32 or ord(character) == 127 for character in text):
+        raise ValidationError(f"{name} must not contain control characters")
+    return text
+
+
+def _finite(value: Any, name: str, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"{name} must be a number")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValidationError(f"{name} must be finite") from exc
+    if not math.isfinite(number):
+        raise ValidationError(f"{name} must be finite")
+    if positive and number <= 0:
+        raise ValidationError(f"{name} must be greater than zero")
+    if not positive and number < 0:
+        raise ValidationError(f"{name} must be zero or greater")
+    return number
+
+
+def _any_finite(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"{name} must be a number")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValidationError(f"{name} must be finite") from exc
+    if not math.isfinite(number):
+        raise ValidationError(f"{name} must be finite")
+    return number
+
+
+def _positive_int(value: Any, name: str, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+        raise ValidationError(f"{name} must be an integer from 1 to {maximum}")
+    return value
+
+
+def _bounded_tuple(value: Any, name: str, item_type: type[_T], maximum: int) -> tuple[_T, ...]:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Iterable):
+        raise ValidationError(f"{name} must be an iterable")
+    result: list[_T] = []
+    for item in value:
+        if len(result) == maximum:
+            raise ValidationError(f"{name} exceeds the {maximum}-item limit")
+        if not isinstance(item, item_type):
+            raise ValidationError(f"{name} entries must be {item_type.__name__} instances")
+        result.append(item)
+    return tuple(result)
+
+
+def _label_tuple(value: Any, name: str, maximum: int) -> tuple[str, ...]:
+    labels = tuple(
+        _label(item, f"{name} entry") for item in _bounded_tuple(value, name, str, maximum)
+    )
+    if len(labels) != len(set(labels)):
+        raise ValidationError(f"{name} must not contain duplicates")
+    return labels
+
+
+def _number_mapping(value: Any, name: str, *, positive: bool) -> Mapping[str, float]:
+    if not isinstance(value, Mapping):
+        raise ValidationError(f"{name} must be a mapping")
+    if len(value) > MAX_MAPPING_ENTRIES:
+        raise ValidationError(f"{name} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
+    result: dict[str, float] = {}
+    for raw_key, raw_number in value.items():
+        key = _label(raw_key, f"{name} key")
+        if key in result:
+            raise ValidationError(f"{name} contains duplicate key {key!r}")
+        result[key] = (
+            _finite(raw_number, f"{name}.{key}", positive=True)
+            if positive
+            else _any_finite(raw_number, f"{name}.{key}")
+        )
+    return MappingProxyType(result)
+
+
+def _freeze_event_data(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+        raise ValidationError("event data must be a mapping with string keys")
+    budget = [0]
+    active: set[int] = set()
+    frozen = _freeze_json(value, depth=0, budget=budget, active=active, path="event data")
+    if not isinstance(frozen, Mapping):  # pragma: no cover - guarded above
+        raise AssertionError("event data root must remain a mapping")
+    try:
+        encoded = json.dumps(
+            _thaw_json(frozen),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError, UnicodeEncodeError) as exc:
+        raise ValidationError("event data must contain finite JSON values") from exc
+    if len(encoded) > MAX_EVENT_DATA_BYTES:
+        raise ValidationError(f"event data exceeds the {MAX_EVENT_DATA_BYTES}-byte limit")
+    return frozen
+
+
+def _freeze_json(
+    value: Any,
+    *,
+    depth: int,
+    budget: list[int],
+    active: set[int],
+    path: str,
+) -> Any:
+    if depth > MAX_JSON_DEPTH:
+        raise ValidationError(f"{path} exceeds the maximum JSON depth of {MAX_JSON_DEPTH}")
+    budget[0] += 1
+    if budget[0] > MAX_JSON_NODES:
+        raise ValidationError(f"event data exceeds the {MAX_JSON_NODES}-value limit")
+    if value is None or isinstance(value, (str, bool)):
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValidationError(f"{path} contains invalid Unicode") from exc
+        return value
+    if isinstance(value, int):
+        if abs(value) > _MAX_SAFE_INTEGER:
+            raise ValidationError(f"{path} integer is outside the interoperable JSON range")
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValidationError(f"{path} must contain finite JSON values")
+        return value
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in active:
+            raise ValidationError(f"{path} must not contain reference cycles")
+        active.add(identity)
+        try:
+            result: dict[str, Any] = {}
+            for key, child in value.items():
+                if not isinstance(key, str):
+                    raise ValidationError(f"{path} object keys must be strings")
+                if len(key) > MAX_TEXT_LENGTH:
+                    raise ValidationError(
+                        f"{path} key exceeds the {MAX_TEXT_LENGTH}-character limit"
+                    )
+                try:
+                    key.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise ValidationError(f"{path} contains an invalid Unicode key") from exc
+                result[key] = _freeze_json(
+                    child,
+                    depth=depth + 1,
+                    budget=budget,
+                    active=active,
+                    path=f"{path}.{key}",
+                )
+            return MappingProxyType(result)
+        finally:
+            active.remove(identity)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        identity = id(value)
+        if identity in active:
+            raise ValidationError(f"{path} must not contain reference cycles")
+        active.add(identity)
+        try:
+            return tuple(
+                _freeze_json(
+                    child,
+                    depth=depth + 1,
+                    budget=budget,
+                    active=active,
+                    path=f"{path}[{index}]",
+                )
+                for index, child in enumerate(value)
+            )
+        finally:
+            active.remove(identity)
+    raise ValidationError(f"{path} contains a non-JSON value of type {type(value).__name__}")
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(child) for key, child in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(child) for child in value]
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,7 +233,19 @@ class Event:
     modality: str
     timestamp_ms: float
     duration_ms: float = 0.0
-    data: dict[str, Any] = field(default_factory=dict)
+    data: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "id", _label(self.id, "event id"))
+        object.__setattr__(self, "stream", _label(self.stream, "event stream"))
+        object.__setattr__(self, "modality", _label(self.modality, "event modality"))
+        object.__setattr__(
+            self, "timestamp_ms", _any_finite(self.timestamp_ms, "event timestamp_ms")
+        )
+        object.__setattr__(self, "duration_ms", _finite(self.duration_ms, "event duration_ms"))
+        if not math.isfinite(self.timestamp_ms + self.duration_ms):
+            raise ValidationError("event end time must be finite")
+        object.__setattr__(self, "data", _freeze_event_data(self.data))
 
     @property
     def end_ms(self) -> float:
@@ -27,17 +254,28 @@ class Event:
     def shifted(self, offset_ms: float) -> Event:
         """Return an event on the shared timeline."""
 
+        offset = _any_finite(offset_ms, "offset_ms")
+        shifted = self.timestamp_ms + offset
+        if not math.isfinite(shifted):
+            raise ValidationError("shifted event timestamp must be finite")
         return Event(
             id=self.id,
             stream=self.stream,
             modality=self.modality,
-            timestamp_ms=self.timestamp_ms + offset_ms,
+            timestamp_ms=shifted,
             duration_ms=self.duration_ms,
-            data=deepcopy(self.data),
+            data=self.data,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "id": self.id,
+            "stream": self.stream,
+            "modality": self.modality,
+            "timestamp_ms": self.timestamp_ms,
+            "duration_ms": self.duration_ms,
+            "data": _thaw_json(self.data),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,12 +287,81 @@ class AlignmentConfig:
     allowed_lateness_ms: float = 0.0
     origin_ms: float = 0.0
     required_streams: tuple[str, ...] = ()
-    offsets_ms: dict[str, float] = field(default_factory=dict)
-    expected_cadence_ms: dict[str, float] = field(default_factory=dict)
+    offsets_ms: Mapping[str, float] = field(default_factory=dict)
+    expected_cadence_ms: Mapping[str, float] = field(default_factory=dict)
     gap_factor: float = 1.5
     late_policy: LatePolicy = "reject"
     max_events_per_window: int = 10_000
     max_output_windows: int = 10_000
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "window_ms", _finite(self.window_ms, "window_ms", positive=True))
+        object.__setattr__(self, "hop_ms", _finite(self.hop_ms, "hop_ms", positive=True))
+        object.__setattr__(
+            self,
+            "allowed_lateness_ms",
+            _finite(self.allowed_lateness_ms, "allowed_lateness_ms"),
+        )
+        object.__setattr__(self, "origin_ms", _any_finite(self.origin_ms, "origin_ms"))
+        object.__setattr__(
+            self,
+            "required_streams",
+            _label_tuple(self.required_streams, "required_streams", MAX_STREAMS),
+        )
+        object.__setattr__(
+            self,
+            "offsets_ms",
+            _number_mapping(self.offsets_ms, "offsets_ms", positive=False),
+        )
+        object.__setattr__(
+            self,
+            "expected_cadence_ms",
+            _number_mapping(self.expected_cadence_ms, "expected_cadence_ms", positive=True),
+        )
+        object.__setattr__(
+            self, "gap_factor", _finite(self.gap_factor, "gap_factor", positive=True)
+        )
+        if not isinstance(self.late_policy, str) or self.late_policy not in {
+            "reject",
+            "drop",
+            "accept",
+        }:
+            raise ValidationError("late_policy must be reject, drop, or accept")
+        object.__setattr__(
+            self,
+            "max_events_per_window",
+            _positive_int(
+                self.max_events_per_window,
+                "max_events_per_window",
+                MAX_EVENTS_PER_WINDOW,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_output_windows",
+            _positive_int(self.max_output_windows, "max_output_windows", MAX_OUTPUT_WINDOWS),
+        )
+        values = (
+            self.origin_ms + self.hop_ms,
+            self.origin_ms + self.window_ms,
+            self.origin_ms + (self.max_output_windows - 1) * self.hop_ms,
+            self.origin_ms + self.max_output_windows * self.hop_ms,
+        )
+        if not all(math.isfinite(value) for value in values):
+            raise ValidationError("configured window range must remain finite")
+        first_start, first_end, last_start, final_start = values
+        last_end = last_start + self.window_ms
+        final_end = final_start + self.window_ms
+        if not all(math.isfinite(value) for value in (last_end, final_end)):
+            raise ValidationError("configured window range must remain finite")
+        if (
+            first_start <= self.origin_ms
+            or first_end <= self.origin_ms
+            or final_start <= last_start
+            or last_end <= last_start
+            or final_end <= final_start
+        ):
+            raise ValidationError("window and hop increments must be representable at this origin")
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +373,22 @@ class AlignedWindow:
     end_ms: float
     events: tuple[Event, ...]
     missing_streams: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.index, bool) or not isinstance(self.index, int) or self.index < 0:
+            raise ValidationError("window index must be a non-negative integer")
+        start = _any_finite(self.start_ms, "window start_ms")
+        end = _any_finite(self.end_ms, "window end_ms")
+        if end <= start:
+            raise ValidationError("window end_ms must be greater than start_ms")
+        events = _bounded_tuple(self.events, "window events", Event, MAX_EVENTS_PER_WINDOW)
+        if len({event.id for event in events}) != len(events):
+            raise ValidationError("window events must not contain duplicate event ids")
+        missing = _label_tuple(self.missing_streams, "missing_streams", MAX_STREAMS)
+        object.__setattr__(self, "start_ms", start)
+        object.__setattr__(self, "end_ms", end)
+        object.__setattr__(self, "events", events)
+        object.__setattr__(self, "missing_streams", missing)
 
     @property
     def complete(self) -> bool:
@@ -97,8 +420,29 @@ class Gap:
     observed_ms: float
     expected_ms: float
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "stream", _label(self.stream, "gap stream"))
+        object.__setattr__(self, "start_ms", _any_finite(self.start_ms, "gap start_ms"))
+        object.__setattr__(self, "end_ms", _any_finite(self.end_ms, "gap end_ms"))
+        object.__setattr__(
+            self, "observed_ms", _finite(self.observed_ms, "gap observed_ms", positive=True)
+        )
+        object.__setattr__(
+            self, "expected_ms", _finite(self.expected_ms, "gap expected_ms", positive=True)
+        )
+        if self.end_ms <= self.start_ms:
+            raise ValidationError("gap end_ms must be greater than start_ms")
+        if self.observed_ms <= self.expected_ms:
+            raise ValidationError("gap observed_ms must be greater than expected_ms")
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "stream": self.stream,
+            "start_ms": self.start_ms,
+            "end_ms": self.end_ms,
+            "observed_ms": self.observed_ms,
+            "expected_ms": self.expected_ms,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +454,22 @@ class AlignmentResult:
     dropped_event_ids: tuple[str, ...] = ()
     accepted_late_event_ids: tuple[str, ...] = ()
     unassigned_event_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        windows = _bounded_tuple(self.windows, "windows", AlignedWindow, MAX_OUTPUT_WINDOWS)
+        gaps = _bounded_tuple(self.gaps, "gaps", Gap, MAX_RESULT_GAPS)
+        if len({window.index for window in windows}) != len(windows):
+            raise ValidationError("windows must not contain duplicate indexes")
+        dropped = _label_tuple(self.dropped_event_ids, "dropped_event_ids", MAX_EVENTS)
+        accepted = _label_tuple(self.accepted_late_event_ids, "accepted_late_event_ids", MAX_EVENTS)
+        unassigned = _label_tuple(self.unassigned_event_ids, "unassigned_event_ids", MAX_EVENTS)
+        if set(dropped) & (set(accepted) | set(unassigned)):
+            raise ValidationError("dropped event ids cannot also be accepted or unassigned")
+        object.__setattr__(self, "windows", windows)
+        object.__setattr__(self, "gaps", gaps)
+        object.__setattr__(self, "dropped_event_ids", dropped)
+        object.__setattr__(self, "accepted_late_event_ids", accepted)
+        object.__setattr__(self, "unassigned_event_ids", unassigned)
 
     def to_dict(self) -> dict[str, Any]:
         return {

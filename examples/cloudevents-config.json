@@ -1,0 +1,8 @@
+{
+  "window_ms": 1000,
+  "hop_ms": 1000,
+  "origin_ms": 1767323045000,
+  "required_streams": ["camera", "microphone"],
+  "max_events_per_window": 100,
+  "max_output_windows": 100
+}

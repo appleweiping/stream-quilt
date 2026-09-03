@@ -1,0 +1,41 @@
+{
+  "environment": {
+    "executable_bits": 64,
+    "implementation": "CPython",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.5"
+  },
+  "equivalent_outputs": true,
+  "modes": [
+    {
+      "median_events_per_second": 7782.309,
+      "median_runtime_ms": 385.4897,
+      "mode": "offline-sort",
+      "output_sha256": "f7d7e602c47b50d037bed6c6c5a6ef48942e406be08b1b32cb6ea13d5d69f161",
+      "p95_runtime_ms": 442.0278,
+      "repeats": 7,
+      "windows": 100
+    },
+    {
+      "median_events_per_second": 8871.962,
+      "median_runtime_ms": 338.1439,
+      "mode": "watermark-replay",
+      "output_sha256": "f7d7e602c47b50d037bed6c6c5a6ef48942e406be08b1b32cb6ea13d5d69f161",
+      "p95_runtime_ms": 391.3974,
+      "repeats": 7,
+      "windows": 100
+    }
+  ],
+  "protocol": {
+    "clock": "perf_counter_ns",
+    "runtime_scope": "alignment only; generation and serialization excluded",
+    "semantic_check": "SHA-256 of canonical AlignmentResult JSON",
+    "warmups": 2
+  },
+  "schema_version": 1,
+  "workload": {
+    "event_count": 3000,
+    "generator": "round-robin-monotonic-v1",
+    "stream_count": 3
+  }
+}

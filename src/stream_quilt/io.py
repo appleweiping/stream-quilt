@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from stream_quilt.errors import ValidationError
+from stream_quilt.limits import (
+    MAX_CONFIG_BYTES,
+    MAX_EVENT_FILE_BYTES,
+    MAX_EVENTS,
+    MAX_MAPPING_ENTRIES,
+    MAX_STREAMS,
+    MAX_TEXT_LENGTH,
+)
 from stream_quilt.models import AlignmentConfig, Event
 
 _CONFIG_FIELDS = {
@@ -32,13 +40,15 @@ def load_config(path: str | Path) -> AlignmentConfig:
     source = Path(path)
     try:
         payload = json.loads(
-            source.read_text(encoding="utf-8"),
+            _read_text_limited(source, MAX_CONFIG_BYTES, "config"),
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_json_constant,
         )
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ValidationError(f"cannot read config {source}: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
+        if isinstance(exc, RecursionError):
+            raise ValidationError(f"invalid JSON in {source}: nesting is too deep") from exc
         raise ValidationError(
             f"invalid JSON in {source} at line {exc.lineno}, column {exc.colno}: {exc.msg}"
         ) from exc
@@ -52,21 +62,27 @@ def load_events(path: str | Path) -> tuple[Event, ...]:
 
     source = Path(path)
     try:
-        lines = source.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
+        lines = _read_text_limited(source, MAX_EVENT_FILE_BYTES, "event").splitlines()
+    except (OSError, UnicodeError) as exc:
         raise ValidationError(f"cannot read events {source}: {exc}") from exc
     events: list[Event] = []
     seen: set[str] = set()
     for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
+        if len(events) == MAX_EVENTS:
+            raise ValidationError(f"event file exceeds the {MAX_EVENTS}-record limit")
         try:
             payload = json.loads(
                 line,
                 object_pairs_hook=_reject_duplicate_keys,
                 parse_constant=_reject_json_constant,
             )
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
+            if isinstance(exc, RecursionError):
+                raise ValidationError(
+                    f"invalid JSON in {source} at line {line_number}: nesting is too deep"
+                ) from exc
             raise ValidationError(
                 f"invalid JSON in {source} at line {line_number}, column {exc.colno}: {exc.msg}"
             ) from exc
@@ -130,17 +146,13 @@ def event_from_dict(payload: Any, *, path: str = "$event") -> Event:
     data = item.get("data", {})
     if not isinstance(data, Mapping) or not all(isinstance(key, str) for key in data):
         raise ValidationError(f"{path}.data must be an object with string keys")
-    try:
-        copied_data = json.loads(json.dumps(data, allow_nan=False))
-    except (TypeError, ValueError, RecursionError) as exc:
-        raise ValidationError(f"{path}.data must contain finite JSON values") from exc
     return Event(
         id=_text(item.get("id"), f"{path}.id"),
         stream=_text(item.get("stream"), f"{path}.stream"),
         modality=_text(item.get("modality"), f"{path}.modality"),
         timestamp_ms=_finite(item.get("timestamp_ms"), f"{path}.timestamp_ms"),
         duration_ms=_nonnegative(item.get("duration_ms", 0.0), f"{path}.duration_ms"),
-        data=copied_data,
+        data=data,
     )
 
 
@@ -160,6 +172,8 @@ def _text(value: Any, path: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValidationError(f"{path} must be a non-empty string")
     text = value.strip()
+    if len(text) > MAX_TEXT_LENGTH:
+        raise ValidationError(f"{path} exceeds the {MAX_TEXT_LENGTH}-character limit")
     try:
         text.encode("utf-8")
     except UnicodeEncodeError as exc:
@@ -198,11 +212,15 @@ def _nonnegative(value: Any, path: str) -> float:
 def _string_sequence(value: Any, path: str) -> tuple[str, ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise ValidationError(f"{path} must be an array")
+    if len(value) > MAX_STREAMS:
+        raise ValidationError(f"{path} exceeds the {MAX_STREAMS}-item limit")
     return tuple(_text(item, f"{path}[{index}]") for index, item in enumerate(value))
 
 
 def _number_mapping(value: Any, path: str, *, positive: bool) -> dict[str, float]:
     item = _mapping(value, path)
+    if len(item) > MAX_MAPPING_ENTRIES:
+        raise ValidationError(f"{path} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
     parser = _positive if positive else _finite
     result: dict[str, float] = {}
     for key, number in item.items():
@@ -230,3 +248,11 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _reject_json_constant(value: str) -> None:
     raise _StrictJsonError(f"non-finite number {value} is not permitted")
+
+
+def _read_text_limited(source: Path, maximum: int, label: str) -> str:
+    with source.open("rb") as handle:
+        raw = handle.read(maximum + 1)
+    if len(raw) > maximum:
+        raise ValidationError(f"{label} file exceeds the {maximum}-byte limit")
+    return raw.decode("utf-8")

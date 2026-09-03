@@ -49,6 +49,8 @@ The checked-in image below is a screenshot of the actual generated
 - Resource guards for events per window and total output windows.
 - Stable JSON and dependency-free HTML output.
 - Standard-library runtime with no network, model, or media dependency.
+- CloudEvents 1.0 structured JSONL ingestion with explicit alignment extensions.
+- Reproducible offline-versus-watermark benchmark JSON with semantic output digests.
 
 ## Installation
 
@@ -85,6 +87,17 @@ Exercise live arrival semantics:
 stream-quilt replay examples/demo-output/config.json examples/demo-output/events.jsonl --output replayed
 ```
 
+Ingest structured CloudEvents or run the versioned CPU benchmark protocol:
+
+```bash
+stream-quilt align examples/cloudevents-config.json examples/cloudevents.jsonl \
+  --input-format cloudevents --output aligned
+stream-quilt benchmark --events 3000 --streams 3 --repeats 7 --output benchmark.json
+```
+
+See [CloudEvents integration and benchmark protocol](docs/cloudevents-and-benchmarks.md) for the exact
+mapping, semantic comparison, reporting rules, and limits of the current evidence.
+
 See [input-format.md](docs/input-format.md) for every field and validation rule.
 
 ## Python API
@@ -102,6 +115,11 @@ for window in result.windows:
 
 write_report_bundle(result, config, "aligned")
 ```
+
+Public models are defensively immutable: constructors snapshot caller-owned mappings and sequences,
+nested event JSON is exposed through read-only mappings and tuples, and direct construction plus
+`dataclasses.replace()` re-run domain validation. Every `to_dict()` method returns a detached,
+ordinary JSON-ready object.
 
 For live arrival order:
 
@@ -178,10 +196,17 @@ python -m coverage report
 
 The suite exercises exact boundaries, long-event overlap, required-stream watermarks, out-of-order
 arrival, every late policy, offset normalization, cadence thresholds, deterministic permutations,
-escaping, CLI behavior, and malformed inputs.
+CloudEvents mapping, baseline equivalence, performance guards, escaping, CLI behavior, and malformed
+inputs.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the
-[code of conduct](CODE_OF_CONDUCT.md).
+[code of conduct](CODE_OF_CONDUCT.md). Maintainer authority is documented in
+[GOVERNANCE.md](GOVERNANCE.md), release verification in [docs/releases.md](docs/releases.md), and
+versioned citation metadata in [CITATION.cff](CITATION.cff).
+
+## Companion repositories
+
+Stream Quilt is one independent part of a small multimodal tooling suite. [Payload Palette](https://github.com/appleweiping/payload-palette) validates request media, [Frame Quorum](https://github.com/appleweiping/frame-quorum) selects auditable key frames, [Evidence Braid](https://github.com/appleweiping/evidence-braid) fuses evidence under explicit policies, and [Graph Sail](https://github.com/appleweiping/graph-sail) plans heterogeneous DAGs. The repositories have separate contracts and release cycles; no runtime dependency is implied.
 
 ## License
 

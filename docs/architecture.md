@@ -15,6 +15,7 @@ flowchart LR
     G --> H[Completeness + gaps]
     H --> I[JSON]
     H --> J[HTML timeline]
+    K[CloudEvents structured JSONL] --> B
 ```
 
 ## Event time and offsets
@@ -81,3 +82,11 @@ Each window scans the currently relevant buffer. For `E` events and `W` windows,
 `O(E × W)`, especially when long events overlap many windows. This simple implementation favors
 clarity for offline evaluation and moderate streams. Very high-rate, long-lived services should use a
 specialized interval index and explicit disk-backed retention.
+
+## Integration and experimental boundary
+
+The CloudEvents adapter terminates at validated `Event` objects; transport acknowledgement,
+authentication, retry, and broker offsets remain the caller's responsibility. The benchmark compares
+offline sorting and watermark replay on a versioned generated workload and checks their canonical
+result digests. Full mapping rules and responsible reporting are documented in
+[cloudevents-and-benchmarks.md](cloudevents-and-benchmarks.md).

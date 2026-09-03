@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from itertools import pairwise
-from types import MappingProxyType
 
 from stream_quilt.errors import LateEventError, ValidationError
+from stream_quilt.limits import MAX_EVENTS
 from stream_quilt.models import AlignedWindow, AlignmentConfig, AlignmentResult, Event, Gap
 
 
@@ -27,8 +26,8 @@ class WatermarkAligner:
         self.config = replace(
             config,
             required_streams=tuple(config.required_streams),
-            offsets_ms=MappingProxyType(dict(config.offsets_ms)),
-            expected_cadence_ms=MappingProxyType(dict(config.expected_cadence_ms)),
+            offsets_ms=dict(config.offsets_ms),
+            expected_cadence_ms=dict(config.expected_cadence_ms),
         )
         self._buffer: list[Event] = []
         self._seen_ids: set[str] = set()
@@ -82,6 +81,8 @@ class WatermarkAligner:
         _validate_event(event)
         if event.id in self._seen_ids:
             raise ValidationError(f"duplicate event id {event.id!r}")
+        if len(self._seen_ids) >= MAX_EVENTS:
+            raise ValidationError(f"alignment exceeds the {MAX_EVENTS}-event limit")
         normalized = event.shifted(self.config.offsets_ms.get(event.stream, 0.0))
         _validate_event(normalized)
         fully_obsolete = _event_ends_at_or_before(normalized, self._next_start)
@@ -210,7 +211,7 @@ def align_events(events: Iterable[Event], config: AlignmentConfig) -> AlignmentR
     :class:`WatermarkAligner` directly to test live arrival behavior.
     """
 
-    materialized = list(events)
+    materialized = _bounded_events(events)
     aligner = WatermarkAligner(config)
     effective_config = aligner.config
     for event in materialized:
@@ -244,7 +245,7 @@ def detect_gaps(events: Iterable[Event], config: AlignmentConfig) -> tuple[Gap, 
 
     _validate_config(config)
     grouped: dict[str, list[Event]] = defaultdict(list)
-    for event in events:
+    for event in _bounded_events(events):
         _validate_event(event)
         if event.stream in config.expected_cadence_ms:
             grouped[event.stream].append(event)
@@ -267,6 +268,21 @@ def detect_gaps(events: Iterable[Event], config: AlignmentConfig) -> tuple[Gap, 
     return tuple(gaps)
 
 
+def _bounded_events(events: Iterable[Event]) -> list[Event]:
+    try:
+        iterator = iter(events)
+    except TypeError as exc:
+        raise ValidationError("events must be iterable") from exc
+    materialized: list[Event] = []
+    for event in iterator:
+        if len(materialized) == MAX_EVENTS:
+            raise ValidationError(f"events exceeds the {MAX_EVENTS}-event limit")
+        if not isinstance(event, Event):
+            raise ValidationError("events must contain Event records")
+        materialized.append(event)
+    return materialized
+
+
 def _overlaps(event: Event, start: float, end: float) -> bool:
     if event.duration_ms == 0:
         return start <= event.timestamp_ms < end
@@ -286,126 +302,29 @@ def _event_ends_at_or_before(event: Event, boundary: float) -> bool:
 def _validate_config(config: AlignmentConfig) -> None:
     if not isinstance(config, AlignmentConfig):
         raise ValidationError("config must be an AlignmentConfig")
-    for label, value in (
-        ("window_ms", config.window_ms),
-        ("hop_ms", config.hop_ms),
-        ("gap_factor", config.gap_factor),
-    ):
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not _is_finite_number(value)
-            or value <= 0
-        ):
-            raise ValidationError(f"{label} must be greater than zero")
-    if (
-        isinstance(config.allowed_lateness_ms, bool)
-        or not isinstance(config.allowed_lateness_ms, (int, float))
-        or not _is_finite_number(config.allowed_lateness_ms)
-        or config.allowed_lateness_ms < 0
-    ):
-        raise ValidationError("allowed_lateness_ms must be zero or greater")
-    if (
-        isinstance(config.origin_ms, bool)
-        or not isinstance(config.origin_ms, (int, float))
-        or not _is_finite_number(config.origin_ms)
-    ):
-        raise ValidationError("origin_ms must be finite")
-    if isinstance(config.required_streams, (str, bytes)) or not isinstance(
-        config.required_streams, Sequence
-    ):
-        raise ValidationError("required_streams must be a sequence")
-    if any(not _is_safe_label(stream) for stream in config.required_streams):
-        raise ValidationError("required_streams must contain safe non-empty strings")
-    if len(config.required_streams) != len(set(config.required_streams)):
-        raise ValidationError("required_streams must not contain duplicates")
-    _validate_number_mapping(config.offsets_ms, "offsets_ms", positive=False)
-    _validate_number_mapping(config.expected_cadence_ms, "expected_cadence_ms", positive=True)
-    if not isinstance(config.late_policy, str) or config.late_policy not in {
-        "reject",
-        "drop",
-        "accept",
-    }:
-        raise ValidationError("late_policy must be reject, drop, or accept")
-    for label, value in (
-        ("max_events_per_window", config.max_events_per_window),
-        ("max_output_windows", config.max_output_windows),
-    ):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ValidationError(f"{label} must be a positive integer")
-    try:
-        first_start = config.origin_ms + config.hop_ms
-        first_end = config.origin_ms + config.window_ms
-        last_allowed_start = config.origin_ms + (config.max_output_windows - 1) * config.hop_ms
-        final_start = config.origin_ms + config.max_output_windows * config.hop_ms
-        last_end = last_allowed_start + config.window_ms
-        final_end = final_start + config.window_ms
-    except (OverflowError, TypeError) as exc:
-        raise ValidationError("configured window range must remain finite") from exc
-    values = (first_start, first_end, last_allowed_start, final_start, last_end, final_end)
-    if not all(_is_finite_number(value) for value in values):
-        raise ValidationError("configured window range must remain finite")
-    if (
-        first_start <= config.origin_ms
-        or first_end <= config.origin_ms
-        or final_start <= last_allowed_start
-        or last_end <= last_allowed_start
-        or final_end <= final_start
-    ):
-        raise ValidationError("window and hop increments must be representable at this origin")
+    AlignmentConfig(
+        window_ms=config.window_ms,
+        hop_ms=config.hop_ms,
+        allowed_lateness_ms=config.allowed_lateness_ms,
+        origin_ms=config.origin_ms,
+        required_streams=config.required_streams,
+        offsets_ms=config.offsets_ms,
+        expected_cadence_ms=config.expected_cadence_ms,
+        gap_factor=config.gap_factor,
+        late_policy=config.late_policy,
+        max_events_per_window=config.max_events_per_window,
+        max_output_windows=config.max_output_windows,
+    )
 
 
 def _validate_event(event: Event) -> None:
     if not isinstance(event, Event):
         raise ValidationError("event must be an Event")
-    labels = (event.id, event.stream, event.modality)
-    if any(not _is_safe_label(value) for value in labels):
-        raise ValidationError("event id, stream, and modality must be safe non-empty strings")
-    for label, value in (("timestamp_ms", event.timestamp_ms), ("duration_ms", event.duration_ms)):
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValidationError(f"event {label} must be numeric")
-        if not _is_finite_number(value):
-            raise ValidationError(f"event {label} must be finite")
-    if event.duration_ms < 0:
-        raise ValidationError("event duration_ms must be zero or greater")
-    if not _is_finite_number(event.end_ms):
-        raise ValidationError("event end time must be finite")
-    if not isinstance(event.data, Mapping) or not all(isinstance(key, str) for key in event.data):
-        raise ValidationError("event data must be a mapping with string keys")
-    try:
-        json.dumps(event.data, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise ValidationError("event data must contain finite JSON values") from exc
-
-
-def _validate_number_mapping(value: object, label: str, *, positive: bool) -> None:
-    if not isinstance(value, Mapping):
-        raise ValidationError(f"{label} must be a mapping")
-    for key, number in value.items():
-        if not _is_safe_label(key):
-            raise ValidationError(f"{label} keys must be non-empty strings")
-        if (
-            isinstance(number, bool)
-            or not isinstance(number, (int, float))
-            or not _is_finite_number(number)
-            or (positive and number <= 0)
-        ):
-            requirement = "finite and greater than zero" if positive else "finite"
-            raise ValidationError(f"{label}.{key} must be {requirement}")
-
-
-def _is_finite_number(value: object) -> bool:
-    try:
-        return math.isfinite(value)  # type: ignore[arg-type]
-    except (OverflowError, TypeError):
-        return False
-
-
-def _is_safe_label(value: object) -> bool:
-    if not isinstance(value, str) or not value.strip():
-        return False
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return not any(ord(character) < 32 or ord(character) == 127 for character in value)
+    Event(
+        id=event.id,
+        stream=event.stream,
+        modality=event.modality,
+        timestamp_ms=event.timestamp_ms,
+        duration_ms=event.duration_ms,
+        data=event.data,
+    )

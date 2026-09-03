@@ -12,3 +12,11 @@ stream-quilt demo --output examples/demo-output --write-input
 
 The command writes `config.json`, `events.jsonl`, `alignment.json`, and a standalone
 `timeline.html`. No network, media model, or browser library is required.
+
+`cloudevents.jsonl` and `cloudevents-config.json` form a second, directly runnable integration
+example using CloudEvents 1.0 structured JSON envelopes:
+
+```bash
+stream-quilt align examples/cloudevents-config.json examples/cloudevents.jsonl \
+  --input-format cloudevents --output cloudevents-output
+```

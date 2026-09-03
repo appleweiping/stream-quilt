@@ -5,11 +5,19 @@ from pathlib import Path
 
 import pytest
 
+from stream_quilt import __version__
 from stream_quilt.aligner import align_events
 from stream_quilt.cli import main
 from stream_quilt.demo import demo_config_payload, demo_event_payloads
 from stream_quilt.io import config_from_dict, event_from_dict
 from stream_quilt.report import render_html, write_report_bundle
+
+
+def test_cli_reports_package_version(capsys):
+    with pytest.raises(SystemExit) as error:
+        main(["--version"])
+    assert error.value.code == 0
+    assert capsys.readouterr().out == f"stream-quilt {__version__}\n"
 
 
 @pytest.fixture

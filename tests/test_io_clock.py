@@ -103,7 +103,7 @@ def test_config_parser_wraps_huge_window_count_float_product():
     payload = demo_config_payload()
     payload["hop_ms"] = 100.0
     payload["max_output_windows"] = 10**400
-    with pytest.raises(ValidationError, match="window range"):
+    with pytest.raises(ValidationError, match="max_output_windows"):
         config_from_dict(payload)
 
 
@@ -127,7 +127,7 @@ def test_event_parser_trims_identifiers_and_copies_data():
     event = event_from_dict(payload)
     payload["data"]["labels"].append("changed")
     assert (event.id, event.stream, event.modality) == ("e1", "camera", "video")
-    assert event.data == {"labels": ["x"]}
+    assert event.data == {"labels": ("x",)}
 
 
 def test_event_parser_rejects_nonfinite_nested_data():

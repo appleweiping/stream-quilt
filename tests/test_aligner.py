@@ -240,45 +240,45 @@ def test_event_in_gapped_window_grid_is_reported_unassigned():
 
 
 @pytest.mark.parametrize(
-    "bad_event",
+    "factory",
     [
-        Event("", "a", "video", 0),
-        Event("e", "", "video", 0),
-        Event("e", "a", "", 0),
-        Event("e", "a", "video", float("inf")),
-        Event("e", "a", "video", 0, -1),
-        Event("e", "a", "video", 1e308, 1e308),
-        Event("e", "a", "video", 0, data=[]),
-        Event("e", "a", "video", 0, data={"score": float("nan")}),
-        Event("bad\ud800id", "a", "video", 0),
-        Event("bad\x00id", "a", "video", 0),
+        lambda: Event("", "a", "video", 0),
+        lambda: Event("e", "", "video", 0),
+        lambda: Event("e", "a", "", 0),
+        lambda: Event("e", "a", "video", float("inf")),
+        lambda: Event("e", "a", "video", 0, -1),
+        lambda: Event("e", "a", "video", 1e308, 1e308),
+        lambda: Event("e", "a", "video", 0, data=[]),
+        lambda: Event("e", "a", "video", 0, data={"score": float("nan")}),
+        lambda: Event("bad\ud800id", "a", "video", 0),
+        lambda: Event("bad\x00id", "a", "video", 0),
     ],
 )
-def test_direct_event_validation(bad_event):
+def test_direct_event_validation(factory):
     with pytest.raises(ValidationError):
-        WatermarkAligner(config()).ingest(bad_event)
+        factory()
 
 
 @pytest.mark.parametrize(
-    "bad_config",
+    "factory",
     [
-        config(window_ms=0),
-        config(hop_ms=-1),
-        config(allowed_lateness_ms=-1),
-        config(late_policy="wait"),
-        config(max_events_per_window=0),
-        config(max_output_windows=0),
-        config(origin_ms=float("inf")),
-        config(allowed_lateness_ms=float("nan")),
-        config(offsets_ms={"a": float("inf")}),
-        config(expected_cadence_ms={"a": 0}),
-        config(required_streams=("a", "a")),
-        config(max_output_windows=10**400),
+        lambda: config(window_ms=0),
+        lambda: config(hop_ms=-1),
+        lambda: config(allowed_lateness_ms=-1),
+        lambda: config(late_policy="wait"),
+        lambda: config(max_events_per_window=0),
+        lambda: config(max_output_windows=0),
+        lambda: config(origin_ms=float("inf")),
+        lambda: config(allowed_lateness_ms=float("nan")),
+        lambda: config(offsets_ms={"a": float("inf")}),
+        lambda: config(expected_cadence_ms={"a": 0}),
+        lambda: config(required_streams=("a", "a")),
+        lambda: config(max_output_windows=10**400),
     ],
 )
-def test_direct_config_validation(bad_config):
+def test_direct_config_validation(factory):
     with pytest.raises(ValidationError):
-        WatermarkAligner(bad_config)
+        factory()
 
 
 def test_gap_detection_finds_start_to_start_violation():
@@ -307,7 +307,7 @@ def test_aligner_snapshots_nested_event_data():
     aligner = WatermarkAligner(config())
     aligner.ingest(Event("e", "a", "video", 0, data=data))
     data["labels"].append("changed")
-    assert aligner.flush()[0].events[0].data == {"labels": ["original"]}
+    assert aligner.flush()[0].events[0].data == {"labels": ("original",)}
 
 
 def test_gap_at_exact_threshold_is_not_reported():

@@ -7,7 +7,10 @@ import json
 import sys
 from pathlib import Path
 
+from stream_quilt import __version__
 from stream_quilt.aligner import WatermarkAligner, align_events, detect_gaps
+from stream_quilt.benchmark import benchmark_alignment, write_benchmark
+from stream_quilt.cloudevents import load_cloudevents
 from stream_quilt.demo import demo_config_payload, demo_event_payloads
 from stream_quilt.errors import OutputError, StreamQuiltError
 from stream_quilt.io import config_from_dict, event_from_dict, load_config, load_events
@@ -20,11 +23,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="stream-quilt",
         description="Align multimodal event streams with explicit clocks and watermarks.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 
     validate = commands.add_parser("validate", help="validate config JSON and event JSONL")
     validate.add_argument("config", type=Path)
     validate.add_argument("events", type=Path)
+    validate.add_argument("--input-format", choices=("native", "cloudevents"), default="native")
 
     align = commands.add_parser("align", help="offline alignment independent of arrival order")
     _add_run_arguments(align)
@@ -35,6 +40,15 @@ def build_parser() -> argparse.ArgumentParser:
     demo = commands.add_parser("demo", help="run a built-in three-stream example")
     demo.add_argument("--output", type=Path, default=Path("demo-output"))
     demo.add_argument("--write-input", action="store_true")
+
+    benchmark = commands.add_parser(
+        "benchmark", help="compare offline sorting and watermark replay on a generated workload"
+    )
+    benchmark.add_argument("--events", type=int, default=3_000)
+    benchmark.add_argument("--streams", type=int, default=3)
+    benchmark.add_argument("--repeats", type=int, default=5)
+    benchmark.add_argument("--warmups", type=int, default=1)
+    benchmark.add_argument("--output", type=Path, default=Path("benchmark.json"))
     return parser
 
 
@@ -43,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "validate":
             config = load_config(args.config)
-            events = load_events(args.events)
+            events = _load_events(args.events, args.input_format)
             align_events(events, config)
             print(
                 f"valid: {len(events)} events, window={config.window_ms:g} ms, "
@@ -52,12 +66,31 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command in {"align", "replay"}:
             config = load_config(args.config)
-            events = load_events(args.events)
+            events = _load_events(args.events, args.input_format)
             result = (
                 align_events(events, config) if args.command == "align" else _replay(events, config)
             )
             paths = write_report_bundle(result, config, args.output)
             _print_summary(result, paths)
+            return 0
+        if args.command == "benchmark":
+            result = benchmark_alignment(
+                event_count=args.events,
+                stream_count=args.streams,
+                repeats=args.repeats,
+                warmups=args.warmups,
+            )
+            path = write_benchmark(result, args.output)
+            print(
+                f"benchmarked {result.event_count} events across {result.stream_count} streams "
+                f"(equivalent outputs: {str(result.equivalent_outputs).lower()})"
+            )
+            for mode in result.modes:
+                print(
+                    f"  {mode.mode:<20} median={mode.median_runtime_ms:.3f} ms "
+                    f"throughput={mode.median_events_per_second:.0f} events/s"
+                )
+            print(f"  {'result':<20} {path}")
             return 0
         if args.command == "demo":
             config = config_from_dict(demo_config_payload())
@@ -94,6 +127,11 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("config", type=Path)
     parser.add_argument("events", type=Path)
     parser.add_argument("--output", type=Path, default=Path("stream-quilt-output"))
+    parser.add_argument("--input-format", choices=("native", "cloudevents"), default="native")
+
+
+def _load_events(path: Path, input_format: str) -> tuple[Event, ...]:
+    return load_cloudevents(path) if input_format == "cloudevents" else load_events(path)
 
 
 def _replay(events: tuple[Event, ...], config: AlignmentConfig) -> AlignmentResult:

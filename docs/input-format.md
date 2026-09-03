@@ -44,3 +44,13 @@ Unknown configuration fields are rejected.
 
 Input uses strict JSON: duplicate object keys and the non-standard `NaN`, `Infinity`, and `-Infinity`
 tokens are rejected, including inside opaque event `data`.
+
+Config files are limited to 1 MiB. Event JSONL is limited to 64 MiB and 100,000 nonblank records.
+Event `data` is copied into a deeply read-only JSON snapshot and is limited to 64 nesting levels,
+100,000 values, and 24 MiB of canonical UTF-8 JSON. Labels are limited to 1,024 characters;
+configuration mappings/stream sets are limited to 4,096 entries. `max_events_per_window` cannot
+exceed 1,000,000 and `max_output_windows` cannot exceed 100,000.
+
+For CloudEvents 1.0 structured JSONL, use `--input-format cloudevents`. The adapter contract and its
+three alignment-specific extensions are documented in
+[cloudevents-and-benchmarks.md](cloudevents-and-benchmarks.md).
