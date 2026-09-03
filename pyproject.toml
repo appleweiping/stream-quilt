@@ -29,7 +29,14 @@ Repository = "https://github.com/appleweiping/stream-quilt"
 Issues = "https://github.com/appleweiping/stream-quilt/issues"
 
 [project.optional-dependencies]
-dev = ["build>=1.2", "coverage[toml]>=7.6", "pytest>=8", "ruff>=0.8", "twine>=7.0"]
+dev = [
+  "build>=1.2",
+  "coverage[toml]>=7.6",
+  "mypy>=1.15",
+  "pytest>=8",
+  "ruff>=0.8",
+  "twine>=7.0",
+]
 
 [project.scripts]
 stream-quilt = "stream_quilt.cli:main"
@@ -61,3 +68,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF", "SIM", "C4", "PIE"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]

@@ -14,7 +14,7 @@ from stream_quilt.cloudevents import load_cloudevents
 from stream_quilt.demo import demo_config_payload, demo_event_payloads
 from stream_quilt.errors import OutputError, StreamQuiltError
 from stream_quilt.io import config_from_dict, event_from_dict, load_config, load_events
-from stream_quilt.models import AlignmentConfig, AlignmentResult, Event
+from stream_quilt.models import AlignedWindow, AlignmentConfig, AlignmentResult, Event
 from stream_quilt.report import write_report_bundle
 
 
@@ -74,18 +74,19 @@ def main(argv: list[str] | None = None) -> int:
             _print_summary(result, paths)
             return 0
         if args.command == "benchmark":
-            result = benchmark_alignment(
+            benchmark = benchmark_alignment(
                 event_count=args.events,
                 stream_count=args.streams,
                 repeats=args.repeats,
                 warmups=args.warmups,
             )
-            path = write_benchmark(result, args.output)
+            path = write_benchmark(benchmark, args.output)
             print(
-                f"benchmarked {result.event_count} events across {result.stream_count} streams "
-                f"(equivalent outputs: {str(result.equivalent_outputs).lower()})"
+                f"benchmarked {benchmark.event_count} events across "
+                f"{benchmark.stream_count} streams "
+                f"(equivalent outputs: {str(benchmark.equivalent_outputs).lower()})"
             )
-            for mode in result.modes:
+            for mode in benchmark.modes:
                 print(
                     f"  {mode.mode:<20} median={mode.median_runtime_ms:.3f} ms "
                     f"throughput={mode.median_events_per_second:.0f} events/s"
@@ -136,7 +137,7 @@ def _load_events(path: Path, input_format: str) -> tuple[Event, ...]:
 
 def _replay(events: tuple[Event, ...], config: AlignmentConfig) -> AlignmentResult:
     aligner = WatermarkAligner(config)
-    windows = []
+    windows: list[AlignedWindow] = []
     for event in events:
         windows.extend(aligner.ingest(event))
     windows.extend(aligner.flush())

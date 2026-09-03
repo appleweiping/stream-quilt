@@ -23,7 +23,7 @@ from stream_quilt.limits import (
     MAX_OUTPUT_WINDOWS,
     MAX_STREAMS,
 )
-from stream_quilt.models import AlignmentConfig, AlignmentResult, Event
+from stream_quilt.models import AlignedWindow, AlignmentConfig, AlignmentResult, Event
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +220,7 @@ def _workload(event_count: int, stream_count: int) -> tuple[tuple[Event, ...], A
 
 def _replay(events: tuple[Event, ...], config: AlignmentConfig) -> AlignmentResult:
     aligner = WatermarkAligner(config)
-    windows = []
+    windows: list[AlignedWindow] = []
     for event in events:
         windows.extend(aligner.ingest(event))
     windows.extend(aligner.flush())

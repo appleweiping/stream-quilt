@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from stream_quilt.errors import ValidationError
 from stream_quilt.limits import (
@@ -16,7 +16,7 @@ from stream_quilt.limits import (
     MAX_STREAMS,
     MAX_TEXT_LENGTH,
 )
-from stream_quilt.models import AlignmentConfig, Event
+from stream_quilt.models import AlignmentConfig, Event, LatePolicy
 
 _CONFIG_FIELDS = {
     "window_ms",
@@ -109,7 +109,7 @@ def config_from_dict(payload: Any) -> AlignmentConfig:
         item.get("expected_cadence_ms", {}), "expected_cadence_ms", positive=True
     )
     late_policy = item.get("late_policy", "reject")
-    if not isinstance(late_policy, str) or late_policy not in {"reject", "drop", "accept"}:
+    if not _is_late_policy(late_policy):
         raise ValidationError("late_policy must be one of: reject, drop, accept")
     max_events = item.get("max_events_per_window", 10_000)
     if isinstance(max_events, bool) or not isinstance(max_events, int) or max_events < 1:
@@ -166,6 +166,10 @@ def _reject_unknown(item: Mapping[str, Any], allowed: set[str], path: str) -> No
     unknown = sorted(set(item) - allowed)
     if unknown:
         raise ValidationError(f"{path} contains unknown field(s): {', '.join(unknown)}")
+
+
+def _is_late_policy(value: Any) -> TypeGuard[LatePolicy]:
+    return isinstance(value, str) and value in {"reject", "drop", "accept"}
 
 
 def _text(value: Any, path: str) -> str:
