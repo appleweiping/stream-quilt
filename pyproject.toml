@@ -30,6 +30,7 @@ Issues = "https://github.com/appleweiping/stream-quilt/issues"
 
 [project.optional-dependencies]
 dev = [
+  "bandit>=1.7",
   "build>=1.2",
   "coverage[toml]>=7.6",
   "mypy>=1.15",
@@ -73,3 +74,12 @@ select = ["E", "F", "I", "B", "UP", "RUF", "SIM", "C4", "PIE"]
 python_version = "3.11"
 strict = true
 files = ["src"]
+
+[tool.bandit]
+targets = ["src"]
+# B105: the flagged assignment is `_TOKEN`, an RFC 7230 token character class used to
+# validate a CloudEvents `datacontenttype` media type. Bandit matches the *variable
+# name* against its password-like word list; the value is a regex fragment, not a
+# credential. This package is dependency-free and has no authentication, secret, or
+# network surface for a hardcoded password to exist in.
+skips = ["B105"]

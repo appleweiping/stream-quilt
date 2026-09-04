@@ -3,6 +3,7 @@
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 
 [![CI](https://github.com/appleweiping/stream-quilt/actions/workflows/ci.yml/badge.svg)](https://github.com/appleweiping/stream-quilt/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/appleweiping/stream-quilt/actions/workflows/codeql.yml/badge.svg)](https://github.com/appleweiping/stream-quilt/actions/workflows/codeql.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
 
