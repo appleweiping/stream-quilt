@@ -3,14 +3,35 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from itertools import pairwise
+from typing import NamedTuple
 
 from stream_quilt.errors import LateEventError, ValidationError
+from stream_quilt.interval_index import WindowIntervalIndex, event_horizon, overlaps
 from stream_quilt.limits import MAX_EVENTS
-from stream_quilt.models import AlignedWindow, AlignmentConfig, AlignmentResult, Event, Gap
+from stream_quilt.models import (
+    AlignedWindow,
+    AlignmentConfig,
+    AlignmentResult,
+    Event,
+    Gap,
+    RetentionPolicy,
+)
+
+_TRACKED = 0
+_DROPPED = 1
+_ACCEPTED_LATE = 2
+
+
+class _Tracked(NamedTuple):
+    """Identity bookkeeping for one ingested event."""
+
+    event_id: str
+    horizon_ms: float
+    status: int
 
 
 class WatermarkAligner:
@@ -19,9 +40,14 @@ class WatermarkAligner:
     Event time is normalized by the configured per-stream offset before any
     watermark or window calculation. The class is deterministic and performs
     no wall-clock reads.
+
+    ``retention`` bounds the per-event identity state a long-running aligner keeps. The
+    default retains every record, which reproduces the historical behavior.
     """
 
-    def __init__(self, config: AlignmentConfig) -> None:
+    def __init__(
+        self, config: AlignmentConfig, *, retention: RetentionPolicy | None = None
+    ) -> None:
         _validate_config(config)
         self.config = replace(
             config,
@@ -29,15 +55,24 @@ class WatermarkAligner:
             offsets_ms=dict(config.offsets_ms),
             expected_cadence_ms=dict(config.expected_cadence_ms),
         )
-        self._buffer: list[Event] = []
+        self._index = WindowIntervalIndex(
+            origin_ms=self.config.origin_ms,
+            window_ms=self.config.window_ms,
+            hop_ms=self.config.hop_ms,
+            max_windows=self.config.max_output_windows,
+        )
+        self.retention = _validated_retention(self.config, retention)
         self._seen_ids: set[str] = set()
-        self._seen_order: list[str] = []
+        self._seen_order: deque[_Tracked] = deque()
         self._assigned_ids: set[str] = set()
         self._max_seen: dict[str, float] = {}
         self._next_start = config.origin_ms
         self._next_index = 0
         self._dropped: list[str] = []
         self._accepted_late: list[str] = []
+        self._unassigned: list[str] = []
+        self._released = 0
+        self._released_reported = 0
         self._closed = False
 
     @property
@@ -66,12 +101,26 @@ class WatermarkAligner:
     def unassigned_event_ids(self) -> tuple[str, ...]:
         """Accepted event IDs that did not overlap any emitted window."""
 
-        dropped = set(self._dropped)
-        return tuple(
-            event_id
-            for event_id in self._seen_order
-            if event_id not in dropped and event_id not in self._assigned_ids
+        return (
+            *self._unassigned,
+            *(
+                record.event_id
+                for record in self._seen_order
+                if record.status != _DROPPED and record.event_id not in self._assigned_ids
+            ),
         )
+
+    @property
+    def retained_event_count(self) -> int:
+        """Event identities still held, including IDs kept only for reporting."""
+
+        return len(self._seen_ids) + self._released_reported
+
+    @property
+    def released_event_count(self) -> int:
+        """Event identities released by the retention policy."""
+
+        return self._released
 
     def ingest(self, event: Event) -> tuple[AlignedWindow, ...]:
         """Ingest one event in arrival order and return newly closed windows."""
@@ -83,6 +132,12 @@ class WatermarkAligner:
             raise ValidationError(f"duplicate event id {event.id!r}")
         if len(self._seen_ids) >= MAX_EVENTS:
             raise ValidationError(f"alignment exceeds the {MAX_EVENTS}-event limit")
+        if self.retained_event_count >= self.retention.max_tracked_events:
+            raise ValidationError(
+                "retained event identities reached max_tracked_events "
+                f"({self.retention.max_tracked_events}); widen the retention policy rather "
+                "than losing reported IDs"
+            )
         normalized = event.shifted(self.config.offsets_ms.get(event.stream, 0.0))
         _validate_event(normalized)
         fully_obsolete = _event_ends_at_or_before(normalized, self._next_start)
@@ -95,23 +150,20 @@ class WatermarkAligner:
                     f"{max(closed_horizon, self._next_start):g} ms"
                 )
             if self.config.late_policy == "drop" or fully_obsolete:
-                self._seen_ids.add(event.id)
-                self._seen_order.append(event.id)
+                self._track(event.id, normalized, _DROPPED)
                 self._dropped.append(event.id)
                 return ()
-        candidate_buffer = [*self._buffer, normalized]
         candidate_max_seen = dict(self._max_seen)
         candidate_max_seen[event.stream] = max(
             normalized.timestamp_ms, candidate_max_seen.get(event.stream, -math.inf)
         )
         watermark = self._watermark_for(candidate_max_seen)
-        windows = () if watermark is None else self._preview_ready(watermark, candidate_buffer)
+        windows = () if watermark is None else self._preview_ready(watermark, normalized)
 
-        self._seen_ids.add(event.id)
-        self._seen_order.append(event.id)
+        self._track(event.id, normalized, _ACCEPTED_LATE if late else _TRACKED)
         if late:
             self._accepted_late.append(event.id)
-        self._buffer = candidate_buffer
+        self._index.insert(normalized)
         self._max_seen = candidate_max_seen
         self._commit_windows(windows)
         return windows
@@ -127,17 +179,17 @@ class WatermarkAligner:
 
         if self._closed:
             return ()
-        if not self._buffer:
+        if not self._index:
             self._closed = True
             return ()
-        horizon = max(_event_horizon(event) for event in self._buffer)
-        windows = self._preview_flush(horizon, self._buffer)
+        horizon = self._index.horizon()
+        windows = self._preview_flush(horizon)
         self._commit_windows(windows)
-        self._buffer.clear()
+        self._index.clear()
         self._closed = True
         return windows
 
-    def _preview_flush(self, horizon: float, buffer: list[Event]) -> tuple[AlignedWindow, ...]:
+    def _preview_flush(self, horizon: float) -> tuple[AlignedWindow, ...]:
         forbidden_start = (
             self.config.origin_ms + self.config.max_output_windows * self.config.hop_ms
         )
@@ -149,12 +201,12 @@ class WatermarkAligner:
         index = self._next_index
         start = self._next_start
         while start < horizon:
-            windows.append(self._build_window(index, start, buffer))
+            windows.append(self._build_window(index, start, ()))
             index += 1
             start = self.config.origin_ms + index * self.config.hop_ms
         return tuple(windows)
 
-    def _preview_ready(self, watermark: float, buffer: list[Event]) -> tuple[AlignedWindow, ...]:
+    def _preview_ready(self, watermark: float, pending: Event) -> tuple[AlignedWindow, ...]:
         forbidden_start = (
             self.config.origin_ms + self.config.max_output_windows * self.config.hop_ms
         )
@@ -166,18 +218,21 @@ class WatermarkAligner:
         index = self._next_index
         start = self._next_start
         while start + self.config.window_ms <= watermark:
-            windows.append(self._build_window(index, start, buffer))
+            windows.append(self._build_window(index, start, (pending,)))
             index += 1
             start = self.config.origin_ms + index * self.config.hop_ms
         return tuple(windows)
 
-    def _build_window(self, index: int, start: float, buffer: list[Event]) -> AlignedWindow:
+    def _build_window(self, index: int, start: float, pending: tuple[Event, ...]) -> AlignedWindow:
         end = start + self.config.window_ms
+        # The index holds committed events only; the arrival still being previewed is
+        # merged in here so that a rejected preview leaves no trace in the index.
+        candidates = [
+            *self._index.overlapping(index),
+            *(event for event in pending if overlaps(event, start, end)),
+        ]
         events = tuple(
-            sorted(
-                (event for event in buffer if _overlaps(event, start, end)),
-                key=lambda event: (event.timestamp_ms, event.stream, event.id),
-            )
+            sorted(candidates, key=lambda event: (event.timestamp_ms, event.stream, event.id))
         )
         if len(events) > self.config.max_events_per_window:
             raise ValidationError(
@@ -199,9 +254,45 @@ class WatermarkAligner:
             self._assigned_ids.update(event.id for event in window.events)
         self._next_index += len(windows)
         self._next_start = self.config.origin_ms + self._next_index * self.config.hop_ms
-        self._buffer = [
-            event for event in self._buffer if not _event_ends_at_or_before(event, self._next_start)
-        ]
+        # ``horizon <= _next_start`` and "last covered window index < _next_index" are the
+        # same predicate, so the index expires exactly what the buffer scan used to drop.
+        self._index.prune(self._next_index)
+        self._release()
+
+    def _track(self, event_id: str, normalized: Event, status: int) -> None:
+        self._seen_ids.add(event_id)
+        self._seen_order.append(_Tracked(event_id, event_horizon(normalized), status))
+
+    def _release(self) -> None:
+        """Forget identity records that the retention policy no longer requires.
+
+        The frontier is derived from the watermark. A ready batch always stops with
+        ``_next_start + window_ms > watermark``, and ``horizon_ms >= window_ms`` is
+        enforced when the policy is accepted, so the frontier is strictly behind
+        ``_next_start``: every released event had already expired from the interval index
+        and no future window can contain it.
+
+        Records are released in arrival order, and each one is classified before it is
+        forgotten, so ``dropped_event_ids``, ``accepted_late_event_ids``, and
+        ``unassigned_event_ids`` still report exactly what they would report with every
+        record retained.
+        """
+
+        watermark = self.watermark_ms
+        if watermark is None:
+            return
+        frontier = watermark - self.retention.horizon_ms
+        while self._seen_order and self._seen_order[0].horizon_ms <= frontier:
+            record = self._seen_order.popleft()
+            self._seen_ids.discard(record.event_id)
+            assigned = record.event_id in self._assigned_ids
+            self._assigned_ids.discard(record.event_id)
+            if record.status != _TRACKED:
+                self._released_reported += 1
+            elif not assigned:
+                self._unassigned.append(record.event_id)
+                self._released_reported += 1
+            self._released += 1
 
 
 def align_events(events: Iterable[Event], config: AlignmentConfig) -> AlignmentResult:
@@ -283,20 +374,30 @@ def _bounded_events(events: Iterable[Event]) -> list[Event]:
     return materialized
 
 
-def _overlaps(event: Event, start: float, end: float) -> bool:
-    if event.duration_ms == 0:
-        return start <= event.timestamp_ms < end
-    return event.timestamp_ms < end and event.end_ms > start
-
-
-def _event_horizon(event: Event) -> float:
-    if event.duration_ms == 0:
-        return math.nextafter(event.timestamp_ms, math.inf)
-    return event.end_ms
-
-
 def _event_ends_at_or_before(event: Event, boundary: float) -> bool:
-    return _event_horizon(event) <= boundary
+    return event_horizon(event) <= boundary
+
+
+def _validated_retention(
+    config: AlignmentConfig, retention: RetentionPolicy | None
+) -> RetentionPolicy:
+    """Accept only a retention policy that cannot release a still-reachable event."""
+
+    if retention is None:
+        return RetentionPolicy()
+    if not isinstance(retention, RetentionPolicy):
+        raise ValidationError("retention must be a RetentionPolicy")
+    checked = RetentionPolicy(
+        horizon_ms=retention.horizon_ms,
+        max_tracked_events=retention.max_tracked_events,
+    )
+    if checked.horizon_ms < config.window_ms:
+        raise ValidationError(
+            f"retention horizon_ms ({checked.horizon_ms:g}) must be at least window_ms "
+            f"({config.window_ms:g}); a shorter horizon could release an event that a "
+            "still-open window can legitimately include"
+        )
+    return checked
 
 
 def _validate_config(config: AlignmentConfig) -> None:

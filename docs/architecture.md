@@ -76,12 +76,67 @@ reported only when the observed interval is strictly greater than `expected × g
 marks one expected interval after the prior event; gap end is the next event start.
 Cadence is a source-observation diagnostic, so it includes arrivals that a replay later drops as late.
 
-## Complexity and memory
+## Window membership index
 
-Each window scans the currently relevant buffer. For `E` events and `W` windows, the worst case is
-`O(E × W)`, especially when long events overlap many windows. This simple implementation favors
-clarity for offline evaluation and moderate streams. Very high-rate, long-lived services should use a
-specialized interval index and explicit disk-backed retention.
+Windows form the regular half-open grid `[origin + i×hop, origin + i×hop + window)`, so every event
+covers one *contiguous* range of window indexes. The aligner stores each buffered event once per node
+of the canonical dyadic decomposition of that range: node `(level, block)` covers indexes
+`[block × 2^level, (block + 1) × 2^level)`. Answering "which events overlap window `i`" reads one
+node per level on the path from that leaf to the root.
+
+Building `W` windows over a buffer of `E` events therefore costs `O(W log E)` lookups plus the events
+actually returned, instead of the earlier `O(E × W)` full scan. One very long event costs
+`O(log span)` to index rather than one entry per covered window, and expiry costs `O(log span)`.
+
+Three properties of this workload pick the structure:
+
+- Arrivals are append-mostly behind a monotonically advancing watermark, so the index must accept
+  near-frontier inserts and expire from behind. A dyadic decomposition is implicit, so there is no
+  tree to rebalance and no sorted array to shift.
+- Window indexes are integers on a fixed grid, which is what makes a grid-aligned structure
+  applicable at all; the two grid boundaries per event are found by binary search over the same
+  overlap predicate the window builder uses, so no floating-point division can make the index and the
+  builder disagree.
+- Queries never mutate the index. A sweep-line active set would have to be rolled back whenever a
+  previewed batch is rejected; a pure query needs no rollback.
+
+Expiry is exact rather than heuristic: "horizon at or before the next open window start" and "last
+covered window index below the next open window index" are the same predicate, so the index drops
+precisely what the buffer scan used to drop.
+
+## Retention
+
+The interval index expires a buffered event as soon as no future window can contain it, so buffered
+memory is bounded by the watermark. Per-event *identity* records — duplicate detection, window
+assignment, and the reported ID tuples — are separate, and without a policy they grow for the life of
+the aligner.
+
+`RetentionPolicy` bounds that state:
+
+```text
+release_frontier = watermark - horizon_ms
+```
+
+An identity record is released once the event's horizon is at or behind the frontier. Records are
+released in arrival order, and each one is classified before it is forgotten, so
+`dropped_event_ids`, `accepted_late_event_ids`, and `unassigned_event_ids` report exactly what they
+would report with every record retained. A long-lived event blocks release of the records behind it,
+which is the conservative direction.
+
+Releasing can never lose an event a future window could include. A ready batch always stops with
+`next_start + window_ms > watermark`, so `next_start > watermark - window_ms`. Requiring
+`horizon_ms >= window_ms` therefore puts the frontier strictly behind `next_start`, which is where
+the interval index has already expired the event. A policy with a shorter horizon is refused at
+construction rather than silently accepted.
+
+`max_tracked_events` is a hard ceiling on retained records, counting IDs kept only for reporting.
+Reaching it raises `ValidationError`. Bounded memory cannot hold an unbounded list of reported IDs,
+so the aligner stops rather than dropping one.
+
+The default policy retains everything, which is the right choice for finite datasets and reproduces
+the historical behavior exactly. Retention is a runtime property of a live aligner rather than an
+alignment semantic, so it is a `WatermarkAligner` argument and not a JSON configuration field; the
+file-driven `align` and `replay` paths are already bounded by the event-file record limit.
 
 ## Integration and experimental boundary
 

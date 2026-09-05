@@ -4,6 +4,24 @@ This project follows semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Grid-aligned interval index for window membership. Each buffered event is stored once per node of
+  the canonical dyadic decomposition of the contiguous window-index range it covers, so building a
+  window costs `O(log span)` lookups plus the events it returns instead of a full buffer scan. Long
+  events cost `O(log span)` to index rather than one entry per covered window. Output is unchanged.
+- `RetentionPolicy` and the `WatermarkAligner(config, retention=...)` keyword: an explicit,
+  watermark-bounded policy that releases per-event identity records once no future window can reach
+  them, so a long-running aligner no longer grows with the number of events it has seen. Each record
+  is classified before it is released, so reported ID tuples are unchanged.
+- `WatermarkAligner.retained_event_count` and `WatermarkAligner.released_event_count`.
+
+### Changed
+
+- A retention policy whose `horizon_ms` is shorter than `window_ms` is refused, because such a
+  frontier could pass an event a still-open window can legitimately include.
+- Reaching `max_tracked_events` raises instead of forgetting a reported event ID.
+
 ## [0.2.0] - 2026-09-01
 
 ### Added

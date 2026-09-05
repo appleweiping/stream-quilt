@@ -47,6 +47,8 @@ The checked-in image below is a screenshot of the actual generated
 - Explicit reject, drop, or accept-partial-without-reopening late policy.
 - Explicit diagnostics for events that fall into gaps between non-overlapping windows.
 - Per-stream cadence-gap diagnostics.
+- Grid-aligned interval index for window membership instead of a buffer scan.
+- Explicit watermark-bounded retention for the identity state of a long-running aligner.
 - Resource guards for events per window and total output windows.
 - Stable JSON and dependency-free HTML output.
 - Standard-library runtime with no network, model, or media dependency.
@@ -137,6 +139,22 @@ for final_window in aligner.flush():
 
 `flush()` is deterministic and idempotent. Ingestion after flush is rejected.
 
+A long-running aligner also needs a retention policy, or its per-event identity records grow without
+bound:
+
+```python
+from stream_quilt import RetentionPolicy, WatermarkAligner
+
+aligner = WatermarkAligner(config, retention=RetentionPolicy(horizon_ms=60_000))
+print(aligner.retained_event_count, aligner.released_event_count)
+```
+
+Identity records are released once the watermark has moved `horizon_ms` past the point where no
+future window can reach them, so reported IDs and window contents are unchanged. `horizon_ms` must be
+at least `window_ms`; a shorter horizon is refused rather than allowed to release an event that a
+still-open window could include. `max_tracked_events` caps the retained records and raises when it is
+reached, because bounded memory cannot hold an unbounded list of reported IDs.
+
 ## Clock offsets
 
 Offsets are added to observed event timestamps. Estimate a constant offset from matched anchors:
@@ -172,9 +190,12 @@ pipeline.
 ## Non-goals and limits
 
 Stream Quilt does not decode media, infer timestamps, synchronize clock drift, authenticate sources,
-or guarantee real-time throughput. The current window builder scans the relevant in-memory buffer and
-is intended for offline datasets and moderate-rate live streams. Very high event rates or very long
-events need an interval index and explicit retention layer.
+or guarantee real-time throughput. Window membership is answered by an interval index over the fixed
+window grid rather than by scanning the buffer, and a `RetentionPolicy` bounds the identity state a
+long-running aligner keeps, so very high event rates and very long events no longer cost
+`O(events x windows)` in time or grow without bound in memory. The index and the retention frontier
+are in-memory and per-process; spilling to disk, sharing state across processes, and recovering it
+after a restart remain outside the model.
 
 `max_output_windows` rejects configurations or inputs that would expand one aligner lifecycle beyond
 the configured output budget. Increase it deliberately for long timelines rather than disabling the
@@ -198,7 +219,10 @@ python -m coverage report
 The suite exercises exact boundaries, long-event overlap, required-stream watermarks, out-of-order
 arrival, every late policy, offset normalization, cadence thresholds, deterministic permutations,
 CloudEvents mapping, baseline equivalence, performance guards, escaping, CLI behavior, and malformed
-inputs.
+inputs. Index and retention coverage is assertion-based rather than timed: window membership is
+compared against a full scan of the same predicate, the events inspected per window are counted, and
+retention is checked at the release boundary, on late and dropped arrivals, and against a policy that
+would release something still reachable.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the
 [code of conduct](CODE_OF_CONDUCT.md). Maintainer authority is documented in

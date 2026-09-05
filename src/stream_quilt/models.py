@@ -77,6 +77,18 @@ def _positive_int(value: Any, name: str, maximum: int) -> int:
     return value
 
 
+def _retention_horizon(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError("horizon_ms must be a number")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValidationError("horizon_ms must be a real number") from exc
+    if math.isnan(number) or number < 0:
+        raise ValidationError("horizon_ms must be zero or greater")
+    return number
+
+
 def _bounded_tuple(value: Any, name: str, item_type: type[_T], maximum: int) -> tuple[_T, ...]:
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Iterable):
         raise ValidationError(f"{name} must be an iterable")
@@ -362,6 +374,33 @@ class AlignmentConfig:
             or final_end <= final_start
         ):
             raise ValidationError("window and hop increments must be representable at this origin")
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionPolicy:
+    """Explicit bound on the per-event identity state a live aligner keeps.
+
+    ``horizon_ms`` is measured back from the current watermark: an event's identity
+    record is released once its horizon is at least that far behind. The default keeps
+    every record, which is the historical behavior and the right choice for finite
+    datasets. ``max_tracked_events`` is a hard ceiling on retained records; reaching it
+    raises rather than quietly forgetting a reported ID.
+
+    The policy governs bookkeeping only. Buffered events are expired by the window grid,
+    which is always stricter, so no configuration of this policy can release an event a
+    future window could still include.
+    """
+
+    horizon_ms: float = math.inf
+    max_tracked_events: int = MAX_EVENTS
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "horizon_ms", _retention_horizon(self.horizon_ms))
+        object.__setattr__(
+            self,
+            "max_tracked_events",
+            _positive_int(self.max_tracked_events, "max_tracked_events", MAX_EVENTS),
+        )
 
 
 @dataclass(frozen=True, slots=True)
