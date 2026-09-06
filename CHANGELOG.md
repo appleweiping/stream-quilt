@@ -15,12 +15,33 @@ This project follows semantic versioning.
   them, so a long-running aligner no longer grows with the number of events it has seen. Each record
   is classified before it is released, so reported ID tuples are unchanged.
 - `WatermarkAligner.retained_event_count` and `WatermarkAligner.released_event_count`.
+- `estimate_drift()` and `DriftEstimate`: a Theil-Sen fit of `reference - observed` against observed
+  time that recovers an offset *and* a rate from matched clock anchors. The rate is the median of the
+  slopes of every anchor pair with distinct observed timestamps and the offset is the median of what
+  remains, so the breakdown point is near 29% of the anchors and one mismatched pair cannot swing the
+  line. Anchors are sorted before any arithmetic, so any permutation of the same anchors returns the
+  identical record. The estimate reports `rate_ppm`, `offset_ms`, `epoch_ms`, `anchors_used`,
+  `pairs_used`, and both a median-absolute and a maximum residual, with `to_dict()` for logging.
+- `ClockDrift` and the `clock_drifts` configuration mapping: an opt-in per-stream affine correction,
+  `offset_ms + rate_ppm x 1e-6 x (t - epoch_ms)`, accepted from JSON as well as Python. A stream with
+  no entry takes exactly the constant `offsets_ms` lookup it always did, so alignment output is
+  unchanged byte for byte when the feature is unused, and `rate_ppm = 0` reproduces a constant offset
+  through the same expression.
 
 ### Changed
 
 - A retention policy whose `horizon_ms` is shorter than `window_ms` is refused, because such a
   frontier could pass an event a still-open window can legitimately include.
 - Reaching `max_tracked_events` raises instead of forgetting a reported event ID.
+- `estimate_drift()` refuses rather than reports when the anchors cannot support the claim: fewer
+  than five anchors, anchors at a single observed instant, or an anchor set in which one anchor takes
+  part in half or more of the usable pairs. `estimate_offset()` remains the documented fallback,
+  needing one anchor and claiming only a constant.
+- A fitted or configured drift rate outside +/-10,000 ppm is refused as far more likely bad anchor
+  data than a real clock, and a stream listed in both `offsets_ms` and `clock_drifts` is refused
+  rather than silently double-corrected.
+- The README non-goal on clock drift is corrected: drift is now synchronized from caller-supplied
+  anchors, while anchor discovery, stepped clocks, and time-varying rates stay outside the model.
 
 ## [0.2.0] - 2026-09-01
 

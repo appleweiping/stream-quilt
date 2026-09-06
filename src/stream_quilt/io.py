@@ -16,7 +16,7 @@ from stream_quilt.limits import (
     MAX_STREAMS,
     MAX_TEXT_LENGTH,
 )
-from stream_quilt.models import AlignmentConfig, Event, LatePolicy
+from stream_quilt.models import AlignmentConfig, ClockDrift, Event, LatePolicy
 
 _CONFIG_FIELDS = {
     "window_ms",
@@ -25,6 +25,7 @@ _CONFIG_FIELDS = {
     "origin_ms",
     "required_streams",
     "offsets_ms",
+    "clock_drifts",
     "expected_cadence_ms",
     "gap_factor",
     "late_policy",
@@ -32,6 +33,7 @@ _CONFIG_FIELDS = {
     "max_output_windows",
 }
 _EVENT_FIELDS = {"id", "stream", "modality", "timestamp_ms", "duration_ms", "data"}
+_DRIFT_FIELDS = {"rate_ppm", "offset_ms", "epoch_ms"}
 
 
 def load_config(path: str | Path) -> AlignmentConfig:
@@ -105,6 +107,7 @@ def config_from_dict(payload: Any) -> AlignmentConfig:
     if len(required) != len(set(required)):
         raise ValidationError("required_streams must not contain duplicates")
     offsets = _number_mapping(item.get("offsets_ms", {}), "offsets_ms", positive=False)
+    drifts = _drift_mapping(item.get("clock_drifts", {}), "clock_drifts")
     cadence = _number_mapping(
         item.get("expected_cadence_ms", {}), "expected_cadence_ms", positive=True
     )
@@ -126,6 +129,7 @@ def config_from_dict(payload: Any) -> AlignmentConfig:
         origin_ms=_finite(item.get("origin_ms", 0.0), "origin_ms"),
         required_streams=required,
         offsets_ms=offsets,
+        clock_drifts=drifts,
         expected_cadence_ms=cadence,
         gap_factor=_positive(item.get("gap_factor", 1.5), "gap_factor"),
         late_policy=late_policy,
@@ -234,6 +238,27 @@ def _number_mapping(value: Any, path: str, *, positive: bool) -> dict[str, float
                 f"{path} contains duplicate key after normalization: {normalized_key!r}"
             )
         result[normalized_key] = parser(number, f"{path}.{key}")
+    return result
+
+
+def _drift_mapping(value: Any, path: str) -> dict[str, ClockDrift]:
+    item = _mapping(value, path)
+    if len(item) > MAX_MAPPING_ENTRIES:
+        raise ValidationError(f"{path} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
+    result: dict[str, ClockDrift] = {}
+    for key, raw in item.items():
+        normalized_key = _text(key, f"{path} key")
+        if normalized_key in result:
+            raise ValidationError(
+                f"{path} contains duplicate key after normalization: {normalized_key!r}"
+            )
+        entry = _mapping(raw, f"{path}.{key}")
+        _reject_unknown(entry, _DRIFT_FIELDS, f"{path}.{key}")
+        result[normalized_key] = ClockDrift(
+            rate_ppm=_finite(entry.get("rate_ppm"), f"{path}.{key}.rate_ppm"),
+            offset_ms=_finite(entry.get("offset_ms", 0.0), f"{path}.{key}.offset_ms"),
+            epoch_ms=_finite(entry.get("epoch_ms", 0.0), f"{path}.{key}.epoch_ms"),
+        )
     return result
 
 

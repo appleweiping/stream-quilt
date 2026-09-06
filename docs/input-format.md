@@ -29,6 +29,7 @@ Unknown fields are rejected. `data` is never interpreted or rendered as HTML.
   "origin_ms": 0,
   "required_streams": ["camera", "microphone", "transcript"],
   "offsets_ms": {"camera": -40, "microphone": 15},
+  "clock_drifts": {"transcript": {"rate_ppm": 120.5, "offset_ms": -12, "epoch_ms": 0}},
   "expected_cadence_ms": {"camera": 500},
   "gap_factor": 1.6,
   "late_policy": "reject",
@@ -41,6 +42,14 @@ Unknown fields are rejected. `data` is never interpreted or rendered as HTML.
 must be unique. `max_events_per_window` and `max_output_windows` are positive integer resource
 limits. An empty `required_streams` list disables incremental watermark closure until `flush()`.
 Unknown configuration fields are rejected.
+
+`clock_drifts` is optional and opt-in per stream. Each entry is an object with a required finite
+`rate_ppm` plus optional `offset_ms` and `epoch_ms`, both defaulting to `0`. The correction added to
+an observed timestamp is `offset_ms + rate_ppm x 1e-6 x (timestamp_ms - epoch_ms)`, so a `rate_ppm` of
+`0` is exactly a constant offset. `rate_ppm` must lie within +/-10,000 ppm; a larger rate is refused
+as a configuration error rather than a real clock. A stream listed in both `offsets_ms` and
+`clock_drifts` is rejected, because a drift correction already carries its own constant term. Unknown
+fields inside a drift object are rejected like any other unknown field.
 
 Input uses strict JSON: duplicate object keys and the non-standard `NaN`, `Infinity`, and `-Infinity`
 tokens are rejected, including inside opaque event `data`.

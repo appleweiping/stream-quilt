@@ -39,6 +39,7 @@ The checked-in image below is a screenshot of the actual generated
 - Arbitrary stream and modality names while preserving opaque event metadata.
 - Per-stream constant clock offsets.
 - Robust median offset estimation from matched clock anchors.
+- Robust affine clock-drift estimation and opt-in per-stream offset-plus-rate correction.
 - Fixed and overlapping half-open windows.
 - Long events included in every overlapping window.
 - Required-stream completeness and missing-stream diagnostics.
@@ -155,7 +156,7 @@ at least `window_ms`; a shorter horizon is refused rather than allowed to releas
 still-open window could include. `max_tracked_events` caps the retained records and raises when it is
 reached, because bounded memory cannot hold an unbounded list of reported IDs.
 
-## Clock offsets
+## Clock offsets and drift
 
 Offsets are added to observed event timestamps. Estimate a constant offset from matched anchors:
 
@@ -167,7 +168,37 @@ print(estimate.offset_ms, estimate.max_residual_ms)
 ```
 
 The median resists a single outlier, while residuals reveal whether a constant offset is credible.
-Clock drift and resampling are intentionally outside the current model.
+
+A constant cannot correct a clock that runs fast or slow. The error it leaves grows without bound
+over a long capture, and multi-device captures routinely skew by tens to hundreds of ppm. Fit an
+offset *and* a rate instead:
+
+```python
+from stream_quilt import AlignmentConfig, estimate_drift
+
+fit = estimate_drift([(t * 1.0003, t) for t in (0, 750_000, 1_500_000, 2_250_000, 3_000_000)])
+print(fit.rate_ppm, fit.offset_ms, fit.anchors_used, fit.pairs_used, fit.max_residual_ms)
+
+config = AlignmentConfig(
+    window_ms=1_000,
+    hop_ms=1_000,
+    required_streams=("camera", "microphone"),
+    clock_drifts={"camera": fit.as_correction()},
+)
+```
+
+The rate is the median slope over every usable anchor pair and the offset is the median of what
+remains, so one mismatched anchor cannot swing the line, and the same anchors in any order give the
+same result. `estimate_drift()` refuses rather than guesses: fewer than five anchors, anchors
+clustered so that one of them decides half the pairs, or a fitted rate beyond +/-10,000 ppm all raise
+instead of returning a confident-looking fit. The estimate reports `rate_ppm`, `offset_ms`,
+`epoch_ms`, `anchors_used`, `pairs_used`, and both residual measures, and `to_dict()` logs them, so
+an operator can judge the correction before trusting it.
+
+Drift correction is opt-in per stream. A stream with no `clock_drifts` entry takes exactly the
+constant `offsets_ms` path it always did, and a stream listed in both mappings is refused rather than
+silently double-corrected. See [architecture.md](docs/architecture.md) for the method, its
+assumptions, and what it deliberately will not do.
 
 ## Semantics that matter
 
@@ -189,8 +220,12 @@ pipeline.
 
 ## Non-goals and limits
 
-Stream Quilt does not decode media, infer timestamps, synchronize clock drift, authenticate sources,
-or guarantee real-time throughput. Window membership is answered by an interval index over the fixed
+Stream Quilt does not decode media, infer timestamps, authenticate sources, or guarantee real-time
+throughput. It does correct clock drift, but only from anchors the caller supplies: one affine
+offset-plus-rate correction per stream, fitted over the anchor span and applied when configured. It
+does not discover anchors, notice a clock that was stepped mid-capture, follow a rate that changes
+during the capture, or resample payloads; timestamps are shifted and durations are never scaled.
+Window membership is answered by an interval index over the fixed
 window grid rather than by scanning the buffer, and a `RetentionPolicy` bounds the identity state a
 long-running aligner keeps, so very high event rates and very long events no longer cost
 `O(events x windows)` in time or grow without bound in memory. The index and the retention frontier
@@ -217,7 +252,8 @@ python -m coverage report
 ```
 
 The suite exercises exact boundaries, long-event overlap, required-stream watermarks, out-of-order
-arrival, every late policy, offset normalization, cadence thresholds, deterministic permutations,
+arrival, every late policy, offset normalization, drift fitting under outliers, reordered anchors,
+refused fits, cadence thresholds, deterministic permutations,
 CloudEvents mapping, baseline equivalence, performance guards, escaping, CLI behavior, and malformed
 inputs. Index and retention coverage is assertion-based rather than timed: window membership is
 compared against a full scan of the same predicate, the events inspected per window are counted, and

@@ -53,6 +53,7 @@ class WatermarkAligner:
             config,
             required_streams=tuple(config.required_streams),
             offsets_ms=dict(config.offsets_ms),
+            clock_drifts=dict(config.clock_drifts),
             expected_cadence_ms=dict(config.expected_cadence_ms),
         )
         self._index = WindowIntervalIndex(
@@ -138,7 +139,7 @@ class WatermarkAligner:
                 f"({self.retention.max_tracked_events}); widen the retention policy rather "
                 "than losing reported IDs"
             )
-        normalized = event.shifted(self.config.offsets_ms.get(event.stream, 0.0))
+        normalized = event.shifted(_stream_offset(self.config, event))
         _validate_event(normalized)
         fully_obsolete = _event_ends_at_or_before(normalized, self._next_start)
         closed_horizon = self._closed_horizon()
@@ -310,7 +311,7 @@ def align_events(events: Iterable[Event], config: AlignmentConfig) -> AlignmentR
     ordered = sorted(
         materialized,
         key=lambda event: (
-            event.timestamp_ms + effective_config.offsets_ms.get(event.stream, 0.0),
+            event.timestamp_ms + _stream_offset(effective_config, event),
             event.stream,
             event.id,
         ),
@@ -320,7 +321,7 @@ def align_events(events: Iterable[Event], config: AlignmentConfig) -> AlignmentR
         windows.extend(aligner.ingest(event))
     windows.extend(aligner.flush())
     normalized = tuple(
-        event.shifted(effective_config.offsets_ms.get(event.stream, 0.0)) for event in materialized
+        event.shifted(_stream_offset(effective_config, event)) for event in materialized
     )
     return AlignmentResult(
         windows=tuple(windows),
@@ -357,6 +358,21 @@ def detect_gaps(events: Iterable[Event], config: AlignmentConfig) -> tuple[Gap, 
                     )
                 )
     return tuple(gaps)
+
+
+def _stream_offset(config: AlignmentConfig, event: Event) -> float:
+    """Return the offset added to one observed event timestamp.
+
+    A stream without a ``clock_drifts`` entry takes exactly the constant ``offsets_ms``
+    lookup the aligner has always used, so an unused drift correction cannot change a
+    single floating-point result. A stream with one takes the affine correction instead;
+    the two mappings are refused for the same stream, so the choice is never ambiguous.
+    """
+
+    drift = config.clock_drifts.get(event.stream)
+    if drift is None:
+        return config.offsets_ms.get(event.stream, 0.0)
+    return drift.offset_at(event.timestamp_ms)
 
 
 def _bounded_events(events: Iterable[Event]) -> list[Event]:
@@ -410,6 +426,7 @@ def _validate_config(config: AlignmentConfig) -> None:
         origin_ms=config.origin_ms,
         required_streams=config.required_streams,
         offsets_ms=config.offsets_ms,
+        clock_drifts=config.clock_drifts,
         expected_cadence_ms=config.expected_cadence_ms,
         gap_factor=config.gap_factor,
         late_policy=config.late_policy,

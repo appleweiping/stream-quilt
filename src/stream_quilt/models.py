@@ -11,6 +11,7 @@ from typing import Any, Literal, TypeVar
 
 from stream_quilt.errors import ValidationError
 from stream_quilt.limits import (
+    MAX_DRIFT_RATE_PPM,
     MAX_EVENT_DATA_BYTES,
     MAX_EVENTS,
     MAX_EVENTS_PER_WINDOW,
@@ -77,6 +78,16 @@ def _positive_int(value: Any, name: str, maximum: int) -> int:
     return value
 
 
+def _drift_rate_ppm(value: Any) -> float:
+    number = _any_finite(value, "clock drift rate_ppm")
+    if abs(number) > MAX_DRIFT_RATE_PPM:
+        raise ValidationError(
+            f"clock drift rate_ppm must be within +/-{MAX_DRIFT_RATE_PPM:g} ppm; "
+            f"{number:g} ppm describes a clock too far from nominal to be a real rate"
+        )
+    return number
+
+
 def _retention_horizon(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValidationError("horizon_ms must be a number")
@@ -125,6 +136,26 @@ def _number_mapping(value: Any, name: str, *, positive: bool) -> Mapping[str, fl
             _finite(raw_number, f"{name}.{key}", positive=True)
             if positive
             else _any_finite(raw_number, f"{name}.{key}")
+        )
+    return MappingProxyType(result)
+
+
+def _drift_mapping(value: Any, name: str) -> Mapping[str, ClockDrift]:
+    if not isinstance(value, Mapping):
+        raise ValidationError(f"{name} must be a mapping")
+    if len(value) > MAX_MAPPING_ENTRIES:
+        raise ValidationError(f"{name} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
+    result: dict[str, ClockDrift] = {}
+    for raw_key, raw_drift in value.items():
+        key = _label(raw_key, f"{name} key")
+        if key in result:
+            raise ValidationError(f"{name} contains duplicate key {key!r}")
+        if not isinstance(raw_drift, ClockDrift):
+            raise ValidationError(f"{name}.{key} must be a ClockDrift")
+        result[key] = ClockDrift(
+            rate_ppm=raw_drift.rate_ppm,
+            offset_ms=raw_drift.offset_ms,
+            epoch_ms=raw_drift.epoch_ms,
         )
     return MappingProxyType(result)
 
@@ -291,6 +322,52 @@ class Event:
 
 
 @dataclass(frozen=True, slots=True)
+class ClockDrift:
+    """Affine clock correction for one stream: a constant offset plus a rate.
+
+    The correction added to an observed timestamp ``t`` is
+    ``offset_ms + rate_ppm * 1e-6 * (t - epoch_ms)``. ``offset_ms`` is therefore the offset
+    that applies exactly at ``epoch_ms``, and ``rate_ppm`` is how fast that offset grows,
+    in parts per million of observed elapsed time. ``rate_ppm = 0`` reproduces the constant
+    offset that ``offsets_ms`` already expresses, which is why a stream may be listed in
+    one mapping or the other but not both.
+
+    ``rate_ppm`` is bounded by ``MAX_DRIFT_RATE_PPM``. The bound keeps ``1 + rate``
+    positive, so the correction is strictly increasing and can never reorder a stream
+    against itself.
+
+    Durations are not scaled, matching the existing constant-offset semantics. The residual
+    error that leaves on an event of length ``d`` is ``|rate| * d``: at the bound that is
+    one part in a hundred, and below a millisecond for any event shorter than 100 seconds.
+    """
+
+    rate_ppm: float
+    offset_ms: float = 0.0
+    epoch_ms: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "rate_ppm", _drift_rate_ppm(self.rate_ppm))
+        object.__setattr__(self, "offset_ms", _any_finite(self.offset_ms, "clock drift offset_ms"))
+        object.__setattr__(self, "epoch_ms", _any_finite(self.epoch_ms, "clock drift epoch_ms"))
+
+    def offset_at(self, observed_ms: float) -> float:
+        """Return the offset to add to one observed timestamp on this clock."""
+
+        observed = _any_finite(observed_ms, "observed_ms")
+        offset = self.offset_ms + self.rate_ppm * 1e-6 * (observed - self.epoch_ms)
+        if not math.isfinite(offset):
+            raise ValidationError("clock drift correction must remain finite")
+        return offset
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rate_ppm": self.rate_ppm,
+            "offset_ms": self.offset_ms,
+            "epoch_ms": self.epoch_ms,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class AlignmentConfig:
     """Windowing, watermark, clock, and completeness policy."""
 
@@ -300,6 +377,7 @@ class AlignmentConfig:
     origin_ms: float = 0.0
     required_streams: tuple[str, ...] = ()
     offsets_ms: Mapping[str, float] = field(default_factory=dict)
+    clock_drifts: Mapping[str, ClockDrift] = field(default_factory=dict)
     expected_cadence_ms: Mapping[str, float] = field(default_factory=dict)
     gap_factor: float = 1.5
     late_policy: LatePolicy = "reject"
@@ -325,6 +403,18 @@ class AlignmentConfig:
             "offsets_ms",
             _number_mapping(self.offsets_ms, "offsets_ms", positive=False),
         )
+        object.__setattr__(
+            self,
+            "clock_drifts",
+            _drift_mapping(self.clock_drifts, "clock_drifts"),
+        )
+        conflicting = sorted(set(self.offsets_ms) & set(self.clock_drifts))
+        if conflicting:
+            raise ValidationError(
+                f"stream(s) {', '.join(conflicting)} appear in both offsets_ms and "
+                "clock_drifts; a drift correction already carries its own offset, so "
+                "listing both would silently double-correct the clock"
+            )
         object.__setattr__(
             self,
             "expected_cadence_ms",
