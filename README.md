@@ -2,6 +2,9 @@
 
 Durable file replay now supports atomic source offsets, state and emitted windows
 in SQLite. See [recovery and restart](docs/recovery.md) for the `resume` CLI and API.
+The [local dataflow API](docs/dataflow.md) also runs composable map/filter/flat-map
+operators and isolated keyed state with atomic per-input rollback and portable
+checkpoints. Its generalized flow checkpoints are separate from aligner recovery.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 
@@ -60,6 +63,10 @@ The checked-in image below is a screenshot of the actual generated
 - Reproducible offline-versus-watermark benchmark JSON with semantic output digests.
 - Deterministic cross-stream joins over normalized event starts, with inclusive
   tolerances, overlapping-window provenance, and a bounded comparison budget.
+- Incremental local dataflow over isolated JSON values: mapping, filtering,
+  bounded expansion, exact keys and reusable per-step/per-key state.
+- Copy-on-write state transactions, pull-based source consumption and strictly
+  validated portable state snapshots with explicit semantic revisions.
 
 ## Installation
 
