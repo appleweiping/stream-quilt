@@ -1,5 +1,8 @@
 # Stream Quilt
 
+Durable file replay now supports atomic source offsets, state and emitted windows
+in SQLite. See [recovery and restart](docs/recovery.md) for the `resume` CLI and API.
+
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 
 [![CI](https://github.com/appleweiping/stream-quilt/actions/workflows/ci.yml/badge.svg)](https://github.com/appleweiping/stream-quilt/actions/workflows/ci.yml)

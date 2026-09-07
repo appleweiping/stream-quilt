@@ -137,6 +137,7 @@ class WatermarkAligner:
             released_count=self._released,
             released_reported_count=self._released_reported,
             closed=self._closed,
+            retention=self.retention,
         )
 
     @classmethod
@@ -151,11 +152,26 @@ class WatermarkAligner:
 
         if not isinstance(checkpoint, AlignerCheckpoint):
             raise ValidationError("checkpoint must be an AlignerCheckpoint")
-        restored = cls(config, retention=retention)
+        # Snapshot again: callers can bypass frozen dataclasses with object.__setattr__.
+        checkpoint = AlignerCheckpoint.from_dict(checkpoint.to_dict())
+        restored = cls(config, retention=checkpoint.retention if retention is None else retention)
         if checkpoint.config_digest != config_digest(restored.config):
             raise ValidationError("checkpoint was created with a different alignment configuration")
+        if restored.retention != checkpoint.retention:
+            raise ValidationError("checkpoint was created with a different retention policy")
+        if checkpoint.next_index > restored.config.max_output_windows:
+            raise ValidationError("checkpoint exceeds configured window limit")
+        expected_start = restored.config.origin_ms + checkpoint.next_index * restored.config.hop_ms
+        if checkpoint.next_start != expected_start:
+            raise ValidationError("checkpoint next_start does not match its window index")
+        tracked = {item.event_id: item for item in checkpoint.seen_order}
         for event in checkpoint.live_events:
+            if event_horizon(event) != tracked[event.id].horizon_ms:
+                raise ValidationError(
+                    "checkpoint live event horizon disagrees with identity record"
+                )
             restored._index._insert_validated(event)
+        restored._index.prune(checkpoint.next_index)
         restored._next_index = checkpoint.next_index
         restored._next_start = checkpoint.next_start
         restored._max_seen = dict(checkpoint.max_seen)

@@ -18,6 +18,7 @@ from stream_quilt.models import (
     RetentionPolicy,
 )
 from stream_quilt.partition import PartitionedEvents, partition_events
+from stream_quilt.recovery import RecoveryConflict, RecoveryPoint, RecoveryStore, resume_events
 from stream_quilt.sessions import SessionResult, SessionWindow, sessionize
 
 __all__ = [
@@ -36,6 +37,9 @@ __all__ = [
     "OffsetEstimate",
     "OutputError",
     "PartitionedEvents",
+    "RecoveryConflict",
+    "RecoveryPoint",
+    "RecoveryStore",
     "RetentionPolicy",
     "SessionResult",
     "SessionWindow",
@@ -57,6 +61,7 @@ __all__ = [
     "load_config",
     "load_events",
     "partition_events",
+    "resume_events",
     "sessionize",
 ]
 

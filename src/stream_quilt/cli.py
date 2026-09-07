@@ -16,6 +16,7 @@ from stream_quilt.errors import OutputError, StreamQuiltError
 from stream_quilt.io import config_from_dict, event_from_dict, load_config, load_events
 from stream_quilt.joins import join_streams
 from stream_quilt.models import AlignedWindow, AlignmentConfig, AlignmentResult, Event
+from stream_quilt.recovery import resume_events
 from stream_quilt.report import write_report_bundle
 
 
@@ -37,6 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     replay = commands.add_parser("replay", help="replay JSONL in arrival order through watermarks")
     _add_run_arguments(replay)
+
+    resume = commands.add_parser("resume", help="resume file replay with atomic SQLite outputs")
+    resume.add_argument("config", type=Path)
+    resume.add_argument("events", type=Path)
+    resume.add_argument("--database", required=True, type=Path)
+    resume.add_argument("--batch-size", type=int, default=100)
+    resume.add_argument("--max-new-events", type=int)
+    resume.add_argument("--input-format", choices=("native", "cloudevents"), default="native")
 
     join = commands.add_parser(
         "join", help="pair events from two streams after deterministic offline alignment"
@@ -84,6 +93,26 @@ def main(argv: list[str] | None = None) -> int:
             )
             paths = write_report_bundle(result, config, args.output)
             _print_summary(result, paths)
+            return 0
+        if args.command == "resume":
+            point = resume_events(
+                _load_events(args.events, args.input_format),
+                load_config(args.config),
+                args.database,
+                batch_size=args.batch_size,
+                max_new_events=args.max_new_events,
+            )
+            print(
+                json.dumps(
+                    {
+                        "generation": point.generation,
+                        "position": point.position,
+                        "windows": point.checkpoint.next_index,
+                        "closed": point.checkpoint.closed,
+                    },
+                    sort_keys=True,
+                )
+            )
             return 0
         if args.command == "join":
             config = load_config(args.config)
