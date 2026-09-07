@@ -16,6 +16,7 @@ from stream_quilt.dataflow import (
     StateUpdate,
 )
 from stream_quilt.errors import LateEventError, OutputError, StreamQuiltError, ValidationError
+from stream_quilt.flow_journal import FlowJournal, FlowOutput, FlowRecoveryPoint
 from stream_quilt.io import config_from_dict, event_from_dict, load_config, load_events
 from stream_quilt.joins import JoinedPair, StreamJoin, join_streams
 from stream_quilt.models import (
@@ -43,8 +44,11 @@ __all__ = [
     "Event",
     "FlowCheckpoint",
     "FlowExecutionError",
+    "FlowJournal",
     "FlowLimits",
+    "FlowOutput",
     "FlowRecord",
+    "FlowRecoveryPoint",
     "FlowRuntime",
     "FlowStep",
     "Gap",

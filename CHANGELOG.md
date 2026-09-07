@@ -5,7 +5,9 @@
 - Local composable operators execute map/filter/flat-map/keying callbacks and
   isolated keyed state, with per-input rollback, bounded expansion and pull
   backpressure. Portable state checkpoints bind explicit semantic revisions;
-  general-flow durable source/state/sink transactions are not yet implemented.
+  `FlowJournal` now supplies local atomic source-position/state/output transactions
+  with generation conflicts, stable verified output pages and restart recovery.
+  External broker acknowledgement and distributed recovery remain out of scope.
 - Strict portable aligner checkpoints retain the retention policy and reject
   malformed state, nonfinite numeric encodings and inconsistent identity records.
 - Atomic SQLite source-offset/state/window commits, generation conflicts,

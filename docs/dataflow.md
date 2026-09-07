@@ -102,9 +102,9 @@ limits. It **does not fingerprint callback code or closure data**. The caller
 must change the explicit revision when callback semantics change. Checkpoints
 are neither authentication proofs nor snapshots of external Python globals.
 
-This generalized runtime currently exposes portable state, not an atomic
-source/state/sink persistence protocol. The existing `RecoveryStore` and
-`resume` CLI remain specific to `WatermarkAligner`; they do not implicitly
-commit this flow's state or outputs. Durable general-flow transactions,
-branch/merge graphs, notifications, general window operators, partitioned
-connectors and distributed execution remain open whole-reference work.
+The optional [FlowJournal](flow-journal.md) commits generalized flow state,
+source record offsets and local outputs in one SQLite transaction. `FlowRuntime`
+itself remains in-memory. The existing `RecoveryStore` and `resume` CLI remain
+specific to `WatermarkAligner`; they do not implicitly commit this flow's state
+or outputs. Branch/merge graphs, notifications, general window operators,
+partitioned connectors and distributed execution remain open whole-reference work.
