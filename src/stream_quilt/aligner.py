@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
 from itertools import pairwise
 from typing import NamedTuple
 
@@ -48,14 +47,7 @@ class WatermarkAligner:
     def __init__(
         self, config: AlignmentConfig, *, retention: RetentionPolicy | None = None
     ) -> None:
-        _validate_config(config)
-        self.config = replace(
-            config,
-            required_streams=tuple(config.required_streams),
-            offsets_ms=dict(config.offsets_ms),
-            clock_drifts=dict(config.clock_drifts),
-            expected_cadence_ms=dict(config.expected_cadence_ms),
-        )
+        self.config = _validated_config(config)
         self._index = WindowIntervalIndex(
             origin_ms=self.config.origin_ms,
             window_ms=self.config.window_ms,
@@ -67,7 +59,7 @@ class WatermarkAligner:
         self._seen_order: deque[_Tracked] = deque()
         self._assigned_ids: set[str] = set()
         self._max_seen: dict[str, float] = {}
-        self._next_start = config.origin_ms
+        self._next_start = self.config.origin_ms
         self._next_index = 0
         self._dropped: list[str] = []
         self._accepted_late: list[str] = []
@@ -128,9 +120,9 @@ class WatermarkAligner:
 
         if self._closed:
             raise ValidationError("cannot ingest after flush")
-        _validate_event(event)
-        if event.id in self._seen_ids:
-            raise ValidationError(f"duplicate event id {event.id!r}")
+        checked = _validated_event(event)
+        if checked.id in self._seen_ids:
+            raise ValidationError(f"duplicate event id {checked.id!r}")
         if len(self._seen_ids) >= MAX_EVENTS:
             raise ValidationError(f"alignment exceeds the {MAX_EVENTS}-event limit")
         if self.retained_event_count >= self.retention.max_tracked_events:
@@ -139,32 +131,31 @@ class WatermarkAligner:
                 f"({self.retention.max_tracked_events}); widen the retention policy rather "
                 "than losing reported IDs"
             )
-        normalized = event.shifted(_stream_offset(self.config, event))
-        _validate_event(normalized)
+        normalized = _shift_validated_event(checked, _stream_offset(self.config, checked))
         fully_obsolete = _event_ends_at_or_before(normalized, self._next_start)
         closed_horizon = self._closed_horizon()
         late = fully_obsolete or normalized.timestamp_ms < closed_horizon
         if late:
             if self.config.late_policy == "reject":
                 raise LateEventError(
-                    f"event {event.id!r} overlaps or precedes closed output ending at "
+                    f"event {checked.id!r} overlaps or precedes closed output ending at "
                     f"{max(closed_horizon, self._next_start):g} ms"
                 )
             if self.config.late_policy == "drop" or fully_obsolete:
-                self._track(event.id, normalized, _DROPPED)
-                self._dropped.append(event.id)
+                self._track(checked.id, normalized, _DROPPED)
+                self._dropped.append(checked.id)
                 return ()
         candidate_max_seen = dict(self._max_seen)
-        candidate_max_seen[event.stream] = max(
-            normalized.timestamp_ms, candidate_max_seen.get(event.stream, -math.inf)
+        candidate_max_seen[checked.stream] = max(
+            normalized.timestamp_ms, candidate_max_seen.get(checked.stream, -math.inf)
         )
         watermark = self._watermark_for(candidate_max_seen)
         windows = () if watermark is None else self._preview_ready(watermark, normalized)
 
-        self._track(event.id, normalized, _ACCEPTED_LATE if late else _TRACKED)
+        self._track(checked.id, normalized, _ACCEPTED_LATE if late else _TRACKED)
         if late:
-            self._accepted_late.append(event.id)
-        self._index.insert(normalized)
+            self._accepted_late.append(checked.id)
+        self._index._insert_validated(normalized)
         self._max_seen = candidate_max_seen
         self._commit_windows(windows)
         return windows
@@ -229,7 +220,9 @@ class WatermarkAligner:
         # The index holds committed events only; the arrival still being previewed is
         # merged in here so that a rejected preview leaves no trace in the index.
         candidates = [
-            *self._index.overlapping(index),
+            # ``AlignedWindow`` snapshots every nested event as it validates the
+            # result. Avoid taking a second public-query snapshot on this hot path.
+            *self._index._matching(index),
             *(event for event in pending if overlaps(event, start, end)),
         ]
         events = tuple(
@@ -303,11 +296,9 @@ def align_events(events: Iterable[Event], config: AlignmentConfig) -> AlignmentR
     :class:`WatermarkAligner` directly to test live arrival behavior.
     """
 
-    materialized = _bounded_events(events)
+    materialized = [_validated_event(event) for event in _bounded_events(events)]
     aligner = WatermarkAligner(config)
     effective_config = aligner.config
-    for event in materialized:
-        _validate_event(event)
     ordered = sorted(
         materialized,
         key=lambda event: (
@@ -321,7 +312,8 @@ def align_events(events: Iterable[Event], config: AlignmentConfig) -> AlignmentR
         windows.extend(aligner.ingest(event))
     windows.extend(aligner.flush())
     normalized = tuple(
-        event.shifted(_stream_offset(effective_config, event)) for event in materialized
+        _shift_validated_event(event, _stream_offset(effective_config, event))
+        for event in materialized
     )
     return AlignmentResult(
         windows=tuple(windows),
@@ -335,19 +327,19 @@ def align_events(events: Iterable[Event], config: AlignmentConfig) -> AlignmentR
 def detect_gaps(events: Iterable[Event], config: AlignmentConfig) -> tuple[Gap, ...]:
     """Find start-to-start cadence gaps on configured streams."""
 
-    _validate_config(config)
+    checked_config = _validated_config(config)
     grouped: dict[str, list[Event]] = defaultdict(list)
     for event in _bounded_events(events):
-        _validate_event(event)
-        if event.stream in config.expected_cadence_ms:
-            grouped[event.stream].append(event)
+        checked = _validated_event(event)
+        if checked.stream in checked_config.expected_cadence_ms:
+            grouped[checked.stream].append(checked)
     gaps: list[Gap] = []
     for stream in sorted(grouped):
-        expected = config.expected_cadence_ms[stream]
+        expected = checked_config.expected_cadence_ms[stream]
         ordered = sorted(grouped[stream], key=lambda event: (event.timestamp_ms, event.id))
         for previous, current in pairwise(ordered):
             observed = current.timestamp_ms - previous.timestamp_ms
-            if observed > expected * config.gap_factor:
+            if observed > expected * checked_config.gap_factor:
                 gaps.append(
                     Gap(
                         stream=stream,
@@ -416,10 +408,10 @@ def _validated_retention(
     return checked
 
 
-def _validate_config(config: AlignmentConfig) -> None:
+def _validated_config(config: AlignmentConfig) -> AlignmentConfig:
     if not isinstance(config, AlignmentConfig):
         raise ValidationError("config must be an AlignmentConfig")
-    AlignmentConfig(
+    return AlignmentConfig(
         window_ms=config.window_ms,
         hop_ms=config.hop_ms,
         allowed_lateness_ms=config.allowed_lateness_ms,
@@ -435,14 +427,33 @@ def _validate_config(config: AlignmentConfig) -> None:
     )
 
 
-def _validate_event(event: Event) -> None:
+def _validate_config(config: AlignmentConfig) -> None:
+    """Compatibility validator used by the strict JSON adapter."""
+
+    _validated_config(config)
+
+
+def _validated_event(event: Event) -> Event:
     if not isinstance(event, Event):
         raise ValidationError("event must be an Event")
-    Event(
+    return Event(
         id=event.id,
         stream=event.stream,
         modality=event.modality,
         timestamp_ms=event.timestamp_ms,
+        duration_ms=event.duration_ms,
+        data=event.data,
+    )
+
+
+def _shift_validated_event(event: Event, offset_ms: float) -> Event:
+    """Shift an internal event that was snapshotted at the current boundary."""
+
+    return Event(
+        id=event.id,
+        stream=event.stream,
+        modality=event.modality,
+        timestamp_ms=event.timestamp_ms + offset_ms,
         duration_ms=event.duration_ms,
         data=event.data,
     )

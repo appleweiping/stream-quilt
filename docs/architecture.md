@@ -106,6 +106,13 @@ measures separate "the fit is good" from "one anchor is wrong": a clean fit cont
 reports a median residual near zero and a maximum equal to the mismatch, which is the signal an
 operator needs and a single scalar would hide.
 
+The public `OffsetEstimate` and `DriftEstimate` records validate direct construction and
+`dataclasses.replace()` just as the fitting functions do. Counts must be positive and within the
+corresponding input ceiling; a drift pair count must exceed its anchor count and cannot exceed
+`n × (n - 1) / 2`. Residuals must be finite and non-negative, and the maximum cannot be below the
+median diagnostic. `ClockDrift` likewise rechecks its rate and finite affine parameters when copied
+or replaced, so a manually assembled evidence record cannot claim an impossible fit.
+
 ### Limits
 
 The rate is one constant over the anchor span. A clock stepped mid-capture is two clocks and has to be
@@ -166,6 +173,19 @@ reported only when the observed interval is strictly greater than `expected × g
 marks one expected interval after the prior event; gap end is the next event start.
 Cadence is a source-observation diagnostic, so it includes arrivals that a replay later drops as late.
 
+Public output models recheck their cross-field meaning on direct construction and replacement. Every
+event in an `AlignedWindow` must overlap its half-open bounds, and a stream cannot be both present and
+listed as missing. A `Gap` must satisfy
+`observed_ms = end_ms - start_ms + expected_ms` within the precision of its finite timestamps. An
+`AlignmentResult` requires ordered windows,
+identical event snapshots wherever an ID appears, disjoint diagnostic ID sets, no
+dropped or unassigned event inside a window, and every accepted-late event in a still-open window.
+These checks prevent a manually constructed report from presenting internally contradictory evidence.
+Nested events, windows, and gaps are rebuilt at each containing-model boundary rather than merely
+wrapping the caller's outer collection. Serialization revalidates the resulting snapshot, so later
+mutation of a source record cannot alter an already constructed result and a deliberately tampered
+record is refused instead of published.
+
 ## Window membership index
 
 Windows form the regular half-open grid `[origin + i×hop, origin + i×hop + window)`, so every event
@@ -212,6 +232,13 @@ released in arrival order, and each one is classified before it is forgotten, so
 `dropped_event_ids`, `accepted_late_event_ids`, and `unassigned_event_ids` report exactly what they
 would report with every record retained. A long-lived event blocks release of the records behind it,
 which is the conservative direction.
+
+Releasing an identity also ends in-memory duplicate detection for that ID. Input IDs remain required
+to be globally unique; a long-running caller that cannot guarantee producer uniqueness must keep a
+persistent deduplication ledger outside Stream Quilt. This is the unavoidable boundary between
+bounded in-process identity state and unbounded historical duplicate detection. Each diagnostic
+property returns an immutable tuple snapshot, so later ingestion cannot mutate a value already
+published by the caller.
 
 Releasing can never lose an event a future window could include. A ready batch always stops with
 `next_start + window_ms > watermark`, so `next_start > watermark - window_ms`. Requiring

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError, replace
+
 import pytest
 
 from stream_quilt.aligner import WatermarkAligner, align_events
@@ -127,6 +129,54 @@ def test_index_horizon_reports_the_furthest_live_event():
     assert index.horizon() == 65
     index.clear()
     assert len(index) == 0
+    with pytest.raises(ValidationError, match="empty interval index"):
+        index.horizon()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"origin_ms": float("inf"), "window_ms": 1, "hop_ms": 1, "max_windows": 1},
+        {"origin_ms": 0, "window_ms": 0, "hop_ms": 1, "max_windows": 1},
+        {"origin_ms": 0, "window_ms": 1, "hop_ms": 0, "max_windows": 1},
+        {"origin_ms": 0, "window_ms": 1, "hop_ms": 1, "max_windows": 0},
+        {"origin_ms": 0, "window_ms": 1, "hop_ms": 1, "max_windows": True},
+    ],
+)
+def test_index_revalidates_direct_construction(kwargs):
+    with pytest.raises(ValidationError):
+        WindowIntervalIndex(**kwargs)
+
+
+def test_index_rejects_invalid_operations_and_snapshots_query_results(monkeypatch):
+    index = WindowIntervalIndex(origin_ms=0, window_ms=100, hop_ms=100, max_windows=2)
+    item = event("e", 10)
+    index.insert(item)
+    with pytest.raises(ValidationError, match="duplicate live event"):
+        index.insert(item)
+    with pytest.raises(ValidationError, match="must be an Event"):
+        index.insert("bad")  # type: ignore[arg-type]
+    forged = event("forged", 20)
+    object.__setattr__(forged, "duration_ms", -1)
+    with pytest.raises(ValidationError, match="duration_ms"):
+        index.insert(forged)
+    monkeypatch.setattr("stream_quilt.interval_index.MAX_EVENTS", 1)
+    with pytest.raises(ValidationError, match="event limit"):
+        index.insert(event("second", 20))
+    snapshot = index.overlapping(0)
+    assert snapshot == (item,)
+    object.__setattr__(snapshot[0], "timestamp_ms", 90)
+    assert index.overlapping(0)[0].timestamp_ms == 10
+    index.clear()
+    assert snapshot[0].timestamp_ms == 90
+    object.__setattr__(item, "timestamp_ms", 150)
+    assert snapshot[0].timestamp_ms == 90
+    for invalid in (True, -1, 2):
+        with pytest.raises(ValidationError, match="window index"):
+            index.overlapping(invalid)
+    for invalid in (True, -1, 3):
+        with pytest.raises(ValidationError, match="window index"):
+            index.prune(invalid)
 
 
 @pytest.mark.parametrize(
@@ -370,3 +420,30 @@ def test_retention_horizon_shorter_than_the_window_is_refused():
 def test_retention_validation(factory):
     with pytest.raises(ValidationError):
         factory()
+
+
+def test_retention_policy_is_immutable_and_revalidates_replace():
+    policy = RetentionPolicy(horizon_ms=200, max_tracked_events=10)
+    with pytest.raises(FrozenInstanceError):
+        policy.horizon_ms = 300  # type: ignore[misc]
+    with pytest.raises(ValidationError, match="horizon_ms"):
+        replace(policy, horizon_ms=-1)
+    with pytest.raises(ValidationError, match="max_tracked_events"):
+        replace(policy, max_tracked_events=0)
+
+
+def test_retention_diagnostic_properties_return_detached_snapshots():
+    aligner = WatermarkAligner(
+        config(required_streams=("a",), late_policy="drop"),
+        retention=RetentionPolicy(horizon_ms=100),
+    )
+    drain(aligner, [event("a0", 0), event("a3", 300)])
+    aligner.ingest(event("old", 10, stream="x"))
+    dropped = aligner.dropped_event_ids
+    unassigned = aligner.unassigned_event_ids
+    aligner.ingest(event("older", 20, stream="y"))
+    aligner.ingest(event("future", 350, stream="z"))
+    assert dropped == ("old",)
+    assert unassigned == ("a3",)
+    assert aligner.dropped_event_ids == ("old", "older")
+    assert aligner.unassigned_event_ids == ("a3", "future")

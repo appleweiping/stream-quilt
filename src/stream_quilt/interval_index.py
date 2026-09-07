@@ -7,7 +7,9 @@ import math
 from collections.abc import Iterator
 from typing import NamedTuple
 
-from stream_quilt.models import Event
+from stream_quilt.errors import ValidationError
+from stream_quilt.limits import MAX_EVENTS
+from stream_quilt.models import AlignmentConfig, Event
 
 
 def event_horizon(event: Event) -> float:
@@ -98,14 +100,20 @@ class WindowIntervalIndex:
     def __init__(
         self, *, origin_ms: float, window_ms: float, hop_ms: float, max_windows: int
     ) -> None:
-        self._origin = origin_ms
-        self._window = window_ms
-        self._hop = hop_ms
+        checked = AlignmentConfig(
+            origin_ms=origin_ms,
+            window_ms=window_ms,
+            hop_ms=hop_ms,
+            max_output_windows=max_windows,
+        )
+        self._origin = checked.origin_ms
+        self._window = checked.window_ms
+        self._hop = checked.hop_ms
         # Windows above ``max_windows - 1`` are never built, so searches stop there.
         # ``max_windows`` itself is the "expires no earlier than the end of the buildable
         # grid" sentinel, which keeps far-future events out of the expiry path without
         # pretending to know their true last window.
-        self._ceiling = max_windows
+        self._ceiling = checked.max_output_windows
         self._live: dict[str, _Entry] = {}
         self._nodes: dict[tuple[int, int], dict[str, Event]] = {}
         self._expiry: list[tuple[int, str]] = []
@@ -128,17 +136,44 @@ class WindowIntervalIndex:
     def insert(self, event: Event) -> None:
         """Index one normalized event under every window it can still reach."""
 
-        first = self._first_overlapping(event)
-        last = self._last_overlapping(event)
-        self._live[event.id] = _Entry(event, first, last)
-        heapq.heappush(self._expiry, (last, event.id))
+        if not isinstance(event, Event):
+            raise ValidationError("indexed value must be an Event")
+        if len(self._live) == MAX_EVENTS:
+            raise ValidationError(f"interval index exceeds the {MAX_EVENTS}-event limit")
+        checked = Event(
+            id=event.id,
+            stream=event.stream,
+            modality=event.modality,
+            timestamp_ms=event.timestamp_ms,
+            duration_ms=event.duration_ms,
+            data=event.data,
+        )
+        self._insert_validated(checked)
+
+    def _insert_validated(self, checked: Event) -> None:
+        """Insert a freshly validated event from the aligner's hot path."""
+
+        if len(self._live) == MAX_EVENTS:
+            raise ValidationError(f"interval index exceeds the {MAX_EVENTS}-event limit")
+        if checked.id in self._live:
+            raise ValidationError(f"duplicate live event id {checked.id!r} in interval index")
+        first = self._first_overlapping(checked)
+        last = self._last_overlapping(checked)
+        self._live[checked.id] = _Entry(checked, first, last)
+        heapq.heappush(self._expiry, (last, checked.id))
         for level, block in _decompose(first, min(last, self._ceiling - 1)):
-            self._nodes.setdefault((level, block), {})[event.id] = event
+            self._nodes.setdefault((level, block), {})[checked.id] = checked
             self._top_level = max(self._top_level, level)
 
     def overlapping(self, index: int) -> tuple[Event, ...]:
         """Return the live events that overlap window ``index``."""
 
+        return tuple(_snapshot_event(event) for event in self._matching(index))
+
+    def _matching(self, index: int) -> tuple[Event, ...]:
+        """Return internal records for the aligner's immediate window build."""
+
+        self._validate_window_index(index, allow_ceiling=False)
         matched: list[Event] = []
         block = index
         for level in range(self._top_level + 1):
@@ -152,6 +187,7 @@ class WindowIntervalIndex:
     def prune(self, first_open_index: int) -> None:
         """Drop events that no window at or after ``first_open_index`` can contain."""
 
+        self._validate_window_index(first_open_index, allow_ceiling=True)
         while self._expiry and self._expiry[0][0] < first_open_index:
             _, event_id = heapq.heappop(self._expiry)
             entry = self._live.pop(event_id)
@@ -164,6 +200,8 @@ class WindowIntervalIndex:
     def horizon(self) -> float:
         """Return the greatest horizon among live events."""
 
+        if not self._live:
+            raise ValidationError("cannot compute the horizon of an empty interval index")
         return max(event_horizon(entry.event) for entry in self._live.values())
 
     def clear(self) -> None:
@@ -175,6 +213,11 @@ class WindowIntervalIndex:
 
     def _window_start(self, index: int) -> float:
         return self._origin + index * self._hop
+
+    def _validate_window_index(self, index: int, *, allow_ceiling: bool) -> None:
+        upper = self._ceiling if allow_ceiling else self._ceiling - 1
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= upper:
+            raise ValidationError(f"window index must be an integer from 0 to {upper}")
 
     def _first_overlapping(self, event: Event) -> int:
         """Return the smallest window index whose interval ends after the event starts.
@@ -209,3 +252,16 @@ class WindowIntervalIndex:
             else:
                 high = middle
         return low - 1
+
+
+def _snapshot_event(event: Event) -> Event:
+    """Detach a query result from the mutable internals of the index."""
+
+    return Event(
+        id=event.id,
+        stream=event.stream,
+        modality=event.modality,
+        timestamp_ms=event.timestamp_ms,
+        duration_ms=event.duration_ms,
+        data=event.data,
+    )

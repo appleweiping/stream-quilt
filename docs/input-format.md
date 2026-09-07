@@ -38,7 +38,8 @@ Unknown fields are rejected. `data` is never interpreted or rendered as HTML.
 }
 ```
 
-`window_ms` and `hop_ms` are required and positive. Numeric values must be finite. Required streams
+`window_ms` and `hop_ms` are required and positive; `gap_factor` must be greater than one so a
+reported cadence gap always starts before the next event. Numeric values must be finite. Required streams
 must be unique. `max_events_per_window` and `max_output_windows` are positive integer resource
 limits. An empty `required_streams` list disables incremental watermark closure until `flush()`.
 Unknown configuration fields are rejected.

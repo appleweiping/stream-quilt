@@ -45,6 +45,14 @@ def test_config_rejects_invalid_positive_numbers(field, value):
         config_from_dict(payload)
 
 
+@pytest.mark.parametrize("value", [0.5, 1])
+def test_gap_factor_must_exceed_one(value):
+    payload = demo_config_payload()
+    payload["gap_factor"] = value
+    with pytest.raises(ValidationError, match="greater than 1"):
+        config_from_dict(payload)
+
+
 @pytest.mark.parametrize("value", [-1, True, float("inf")])
 def test_config_rejects_invalid_lateness(value):
     payload = demo_config_payload()

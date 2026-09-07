@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from stream_quilt.errors import ValidationError
-from stream_quilt.limits import MAX_DRIFT_ANCHORS, MAX_DRIFT_RATE_PPM
+from stream_quilt.limits import MAX_DRIFT_ANCHORS, MAX_DRIFT_RATE_PPM, MAX_EVENTS
 from stream_quilt.models import ClockDrift
 
 MIN_DRIFT_ANCHORS = 5
@@ -35,6 +35,35 @@ class OffsetEstimate:
     anchors_used: int
     median_absolute_deviation_ms: float
     max_residual_ms: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "offset_ms", _finite(self.offset_ms, "offset estimate offset_ms"))
+        object.__setattr__(
+            self,
+            "anchors_used",
+            _integer_between(self.anchors_used, "anchors_used", 1, MAX_EVENTS),
+        )
+        median_residual = _finite(
+            self.median_absolute_deviation_ms,
+            "offset estimate median_absolute_deviation_ms",
+        )
+        max_residual = _finite(self.max_residual_ms, "offset estimate max_residual_ms")
+        if median_residual < 0 or max_residual < median_residual:
+            raise ValidationError(
+                "offset estimate residuals must be non-negative with max_residual_ms at or "
+                "above median_absolute_deviation_ms"
+            )
+        object.__setattr__(self, "median_absolute_deviation_ms", median_residual)
+        object.__setattr__(self, "max_residual_ms", max_residual)
+
+    def to_dict(self) -> dict[str, Any]:
+        checked = _snapshot_offset_estimate(self)
+        return {
+            "offset_ms": checked.offset_ms,
+            "anchors_used": checked.anchors_used,
+            "median_absolute_deviation_ms": checked.median_absolute_deviation_ms,
+            "max_residual_ms": checked.max_residual_ms,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,10 +93,20 @@ class DriftEstimate:
         object.__setattr__(self, "rate_ppm", _plausible_rate_ppm(self.rate_ppm))
         object.__setattr__(self, "offset_ms", _finite(self.offset_ms, "drift estimate offset_ms"))
         object.__setattr__(self, "epoch_ms", _finite(self.epoch_ms, "drift estimate epoch_ms"))
-        object.__setattr__(
-            self, "anchors_used", _at_least(self.anchors_used, "anchors_used", MIN_DRIFT_ANCHORS)
+        anchors_used = _integer_between(
+            self.anchors_used,
+            "anchors_used",
+            MIN_DRIFT_ANCHORS,
+            MAX_DRIFT_ANCHORS,
         )
-        object.__setattr__(self, "pairs_used", _at_least(self.pairs_used, "pairs_used", 1))
+        max_pairs = anchors_used * (anchors_used - 1) // 2
+        pairs_used = _integer_between(self.pairs_used, "pairs_used", 1, max_pairs)
+        if pairs_used <= anchors_used:
+            raise ValidationError(
+                "drift estimate pairs_used must exceed anchors_used to support an identifiable fit"
+            )
+        object.__setattr__(self, "anchors_used", anchors_used)
+        object.__setattr__(self, "pairs_used", pairs_used)
         median_residual = _finite(
             self.median_absolute_residual_ms, "drift estimate median_absolute_residual_ms"
         )
@@ -83,17 +122,23 @@ class DriftEstimate:
     def as_correction(self) -> ClockDrift:
         """Return the correction to install for one stream in ``clock_drifts``."""
 
-        return ClockDrift(rate_ppm=self.rate_ppm, offset_ms=self.offset_ms, epoch_ms=self.epoch_ms)
+        checked = _snapshot_drift_estimate(self)
+        return ClockDrift(
+            rate_ppm=checked.rate_ppm,
+            offset_ms=checked.offset_ms,
+            epoch_ms=checked.epoch_ms,
+        )
 
     def to_dict(self) -> dict[str, Any]:
+        checked = _snapshot_drift_estimate(self)
         return {
-            "rate_ppm": round(self.rate_ppm, 6),
-            "offset_ms": round(self.offset_ms, 6),
-            "epoch_ms": round(self.epoch_ms, 6),
-            "anchors_used": self.anchors_used,
-            "pairs_used": self.pairs_used,
-            "median_absolute_residual_ms": round(self.median_absolute_residual_ms, 6),
-            "max_residual_ms": round(self.max_residual_ms, 6),
+            "rate_ppm": round(checked.rate_ppm, 6),
+            "offset_ms": round(checked.offset_ms, 6),
+            "epoch_ms": round(checked.epoch_ms, 6),
+            "anchors_used": checked.anchors_used,
+            "pairs_used": checked.pairs_used,
+            "median_absolute_residual_ms": round(checked.median_absolute_residual_ms, 6),
+            "max_residual_ms": round(checked.max_residual_ms, 6),
         }
 
 
@@ -105,7 +150,7 @@ def estimate_offset(anchors: Iterable[tuple[float, float]]) -> OffsetEstimate:
     when the residuals grow with time instead of scattering around zero.
     """
 
-    pairs = list(anchors)
+    pairs = _bounded_anchors(anchors, MAX_EVENTS, "offset estimation")
     if not pairs:
         raise ValidationError("at least one clock anchor is required")
     offsets = [offset for _, offset in _anchor_samples(pairs)]
@@ -156,17 +201,12 @@ def estimate_drift(anchors: Iterable[tuple[float, float]]) -> DriftEstimate:
     **Plausibility.** A fit outside ``MAX_DRIFT_RATE_PPM`` is refused rather than reported.
     """
 
-    pairs = list(anchors)
+    pairs = _bounded_anchors(anchors, MAX_DRIFT_ANCHORS, "drift estimation")
     if len(pairs) < MIN_DRIFT_ANCHORS:
         raise ValidationError(
             f"drift estimation requires at least {MIN_DRIFT_ANCHORS} matched clock anchors "
             f"(got {len(pairs)}); below that one bad anchor decides the median slope and no "
             "residual reveals it, so use estimate_offset() for a constant offset instead"
-        )
-    if len(pairs) > MAX_DRIFT_ANCHORS:
-        raise ValidationError(
-            f"drift estimation accepts at most {MAX_DRIFT_ANCHORS} clock anchors "
-            f"(got {len(pairs)}); the pairwise slope set grows quadratically"
         )
     samples = sorted(_anchor_samples(pairs))
     usable_pairs, most_shared = _pair_census(samples)
@@ -212,12 +252,18 @@ def _anchor_samples(pairs: list[Any]) -> list[tuple[float, float]]:
     samples: list[tuple[float, float]] = []
     for index, pair in enumerate(pairs):
         try:
-            pair_length = len(pair)
+            iterator = iter(pair)
         except TypeError as exc:
             raise ValidationError(f"clock anchor {index} must contain two timestamps") from exc
-        if pair_length != 2:
+        values: list[Any] = []
+        for _ in range(3):
+            try:
+                values.append(next(iterator))
+            except StopIteration:
+                break
+        if len(values) != 2:
             raise ValidationError(f"clock anchor {index} must contain two timestamps")
-        reference, observed = pair
+        reference, observed = values
         for label, value in (("reference", reference), ("observed", observed)):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValidationError(f"clock anchor {index} {label} must be numeric")
@@ -232,6 +278,28 @@ def _anchor_samples(pairs: list[Any]) -> list[tuple[float, float]]:
             raise ValidationError(f"clock anchor {index} produces a non-finite offset")
         samples.append((float(observed), offset))
     return samples
+
+
+def _bounded_anchors(anchors: Iterable[Any], maximum: int, operation: str) -> list[Any]:
+    """Materialize no more than the documented amount of caller-owned input."""
+
+    if isinstance(anchors, (str, bytes, bytearray)):
+        raise ValidationError("clock anchors must be an iterable of timestamp pairs")
+    try:
+        iterator = iter(anchors)
+    except TypeError as exc:
+        raise ValidationError("clock anchors must be iterable") from exc
+    pairs: list[Any] = []
+    for pair in iterator:
+        if len(pairs) == maximum:
+            detail = (
+                "; the pairwise slope set grows quadratically"
+                if maximum == MAX_DRIFT_ANCHORS
+                else ""
+            )
+            raise ValidationError(f"{operation} accepts at most {maximum} clock anchors{detail}")
+        pairs.append(pair)
+    return pairs
 
 
 def _pair_census(samples: list[tuple[float, float]]) -> tuple[int, int]:
@@ -272,7 +340,32 @@ def _finite(value: Any, name: str) -> float:
     return float(value)
 
 
-def _at_least(value: Any, name: str, minimum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValidationError(f"drift estimate {name} must be an integer of at least {minimum}")
+def _integer_between(value: Any, name: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValidationError(f"estimate {name} must be an integer from {minimum} to {maximum}")
     return value
+
+
+def _snapshot_offset_estimate(value: OffsetEstimate) -> OffsetEstimate:
+    """Revalidate offset evidence before publication."""
+
+    return OffsetEstimate(
+        offset_ms=value.offset_ms,
+        anchors_used=value.anchors_used,
+        median_absolute_deviation_ms=value.median_absolute_deviation_ms,
+        max_residual_ms=value.max_residual_ms,
+    )
+
+
+def _snapshot_drift_estimate(value: DriftEstimate) -> DriftEstimate:
+    """Revalidate drift evidence before publication or correction creation."""
+
+    return DriftEstimate(
+        rate_ppm=value.rate_ppm,
+        offset_ms=value.offset_ms,
+        epoch_ms=value.epoch_ms,
+        anchors_used=value.anchors_used,
+        pairs_used=value.pairs_used,
+        median_absolute_residual_ms=value.median_absolute_residual_ms,
+        max_residual_ms=value.max_residual_ms,
+    )

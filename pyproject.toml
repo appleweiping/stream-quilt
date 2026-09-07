@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools==84.0.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
 
 [project]
 name = "stream-quilt"
-version = "0.2.0"
+version = "0.3.0"
 description = "Deterministic alignment and watermarking for multimodal event streams"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,7 +32,9 @@ Issues = "https://github.com/appleweiping/stream-quilt/issues"
 dev = [
   "bandit>=1.7",
   "build>=1.2",
+  "check-wheel-contents>=0.6",
   "coverage[toml]>=7.6",
+  "hatchling==1.32.0",
   "mypy>=1.15",
   "pytest>=8",
   "ruff>=0.8",
@@ -42,14 +44,26 @@ dev = [
 [project.scripts]
 stream-quilt = "stream_quilt.cli:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+[tool.hatch.build.targets.wheel]
+packages = ["src/stream_quilt"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-stream_quilt = ["py.typed"]
+[tool.hatch.build.targets.sdist]
+include = [
+  "/benchmarks",
+  "/docs",
+  "/examples",
+  "/src",
+  "/tests",
+  "/CHANGELOG.md",
+  "/CITATION.cff",
+  "/CODE_OF_CONDUCT.md",
+  "/CONTRIBUTING.md",
+  "/GOVERNANCE.md",
+  "/LICENSE",
+  "/README.md",
+  "/SECURITY.md",
+  "/uv.lock",
+]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

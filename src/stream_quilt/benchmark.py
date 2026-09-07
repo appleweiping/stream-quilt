@@ -75,22 +75,22 @@ class AlignmentBenchmark:
                 mode_list.append(mode)
         except TypeError as exc:
             raise ValueError("modes must be iterable") from exc
-        modes = tuple(mode_list)
+        modes = tuple(_snapshot_mode(mode) for mode in mode_list)
         object.__setattr__(self, "modes", modes)
         _validate_benchmark(self)
 
     def to_dict(self) -> dict[str, Any]:
-        _validate_benchmark(self)
+        checked = _snapshot_benchmark(self)
         return {
             "schema_version": 1,
             "workload": {
                 "generator": "round-robin-monotonic-v1",
-                "event_count": self.event_count,
-                "stream_count": self.stream_count,
+                "event_count": checked.event_count,
+                "stream_count": checked.stream_count,
             },
             "protocol": {
                 "clock": "perf_counter_ns",
-                "warmups": self.warmups,
+                "warmups": checked.warmups,
                 "runtime_scope": "alignment only; generation and serialization excluded",
                 "semantic_check": "SHA-256 of canonical AlignmentResult JSON",
             },
@@ -100,8 +100,8 @@ class AlignmentBenchmark:
                 "platform": platform.platform(),
                 "executable_bits": 64 if sys.maxsize > 2**32 else 32,
             },
-            "equivalent_outputs": self.equivalent_outputs,
-            "modes": [mode.to_dict() for mode in self.modes],
+            "equivalent_outputs": checked.equivalent_outputs,
+            "modes": [mode.to_dict() for mode in checked.modes],
         }
 
 
@@ -277,6 +277,8 @@ def _validate_benchmark(value: AlignmentBenchmark) -> None:
         raise ValueError("equivalent_outputs must be a boolean")
     if not isinstance(value.modes, tuple) or not value.modes:
         raise ValueError("modes must be a non-empty tuple")
+    if len(value.modes) > MAX_STREAMS:
+        raise ValueError(f"modes exceeds the {MAX_STREAMS}-item limit")
     for mode in value.modes:
         _validate_mode(mode)
     if len({mode.mode for mode in value.modes}) != len(value.modes):
@@ -286,6 +288,30 @@ def _validate_benchmark(value: AlignmentBenchmark) -> None:
     equal_digests = len({mode.output_sha256 for mode in value.modes}) == 1
     if value.equivalent_outputs != equal_digests:
         raise ValueError("equivalent_outputs is inconsistent with output digests")
+
+
+def _snapshot_mode(value: Any) -> ModeBenchmark:
+    _validate_mode(value)
+    return ModeBenchmark(
+        mode=value.mode,
+        repeats=value.repeats,
+        median_runtime_ms=value.median_runtime_ms,
+        p95_runtime_ms=value.p95_runtime_ms,
+        median_events_per_second=value.median_events_per_second,
+        output_sha256=value.output_sha256,
+        windows=value.windows,
+    )
+
+
+def _snapshot_benchmark(value: AlignmentBenchmark) -> AlignmentBenchmark:
+    _validate_benchmark(value)
+    return AlignmentBenchmark(
+        event_count=value.event_count,
+        stream_count=value.stream_count,
+        warmups=value.warmups,
+        equivalent_outputs=value.equivalent_outputs,
+        modes=value.modes,
+    )
 
 
 def _bounded_count(value: Any, label: str, *, minimum: int, maximum: int) -> None:

@@ -141,9 +141,7 @@ def _replay(events: tuple[Event, ...], config: AlignmentConfig) -> AlignmentResu
     for event in events:
         windows.extend(aligner.ingest(event))
     windows.extend(aligner.flush())
-    normalized = tuple(
-        event.shifted(aligner.config.offsets_ms.get(event.stream, 0.0)) for event in events
-    )
+    normalized = tuple(event.shifted(_stream_offset(aligner.config, event)) for event in events)
     return AlignmentResult(
         windows=tuple(windows),
         gaps=detect_gaps(normalized, aligner.config),
@@ -151,6 +149,13 @@ def _replay(events: tuple[Event, ...], config: AlignmentConfig) -> AlignmentResu
         accepted_late_event_ids=aligner.accepted_late_event_ids,
         unassigned_event_ids=aligner.unassigned_event_ids,
     )
+
+
+def _stream_offset(config: AlignmentConfig, event: Event) -> float:
+    drift = config.clock_drifts.get(event.stream)
+    if drift is not None:
+        return drift.offset_at(event.timestamp_ms)
+    return config.offsets_ms.get(event.stream, 0.0)
 
 
 def _print_summary(result: AlignmentResult, paths: dict[str, Path]) -> None:

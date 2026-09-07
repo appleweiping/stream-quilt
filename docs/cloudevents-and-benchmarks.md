@@ -20,12 +20,27 @@ the internal unique event ID. The original envelope remains under `event.data.cl
 For exact millisecond semantics, this adapter supports the RFC 3339 profile
 `YYYY-MM-DDTHH:MM:SS{.sss}{Z|±HH:MM}`: uppercase `T`/`Z`, an explicit offset, and zero to three
 fractional digits. Leap seconds and higher sub-millisecond precision must be normalized upstream.
-`source` is validated as an ASCII RFC 3986 URI-reference, and context/extension attribute names use
-the CloudEvents 1.0 lowercase-alphanumeric, 20-character limit.
-`dataschema`, when present, must carry an absolute URI scheme. `datacontenttype` must use a
-syntactically valid media type. As required by the JSON format, a `null` context or extension
+`source` is validated against the ASCII RFC 3986 URI-reference grammar, including authority,
+path, query, percent-escape, and single-fragment rules. In particular, a relative first path
+segment cannot contain a colon. `dataschema`, when present, must be an RFC 3986 absolute URI;
+the absolute-URI grammar excludes fragments. `datacontenttype` must use a syntactically valid
+media type. Context/extension attribute names use the CloudEvents 1.0 lowercase-alphanumeric
+character set; this adapter applies the specification's recommended 20-character maximum as an
+input ceiling. As required by the JSON format, a `null` context or extension
 attribute is treated as unset; explicit `data: null` remains a payload. A `null` `data_base64` is
 unset and therefore does not conflict with `data`.
+
+CloudEvents Integer attributes use the normative signed 32-bit range from -2,147,483,648 through
+2,147,483,647; the non-negative `durationms` extension therefore tops out at 2,147,483,647.
+CloudEvents String attributes reject C0/C1 controls, Unicode noncharacters, and invalid scalar
+values. An unknown String extension may be empty. Values are never trimmed or otherwise
+normalized: whitespace that makes a URI or adapter label invalid is rejected rather than silently
+changing event identity or stream semantics.
+
+The internal event ID normally retains the readable percent-encoded `source`/`id` pair. If that
+derived label would exceed Stream Quilt's label ceiling even though each CloudEvents field is
+valid, the adapter uses a deterministic SHA-256 identity over the unambiguous JSON pair instead;
+the original values remain in `event.data.cloudevent`.
 
 Three optional extension attributes influence the adapter:
 
@@ -47,7 +62,9 @@ JSONL files, not HTTP binary-mode headers or CloudEvents batch envelopes.
 Structured and native event JSONL files are capped at 64 MiB and 100,000 nonblank records. Config
 files are capped at 1 MiB. Frozen event payloads permit at most 64 nested levels, 100,000 JSON values,
 and 24 MiB of canonical UTF-8 JSON. Labels, stream/mapping collections, output windows, and benchmark
-work also have explicit fixed ceilings. These checks bound local allocation; this adapter still does
+work also have explicit fixed ceilings. Public iterable and mapping boundaries stop consuming input
+as soon as the relevant ceiling is crossed, including callers whose iterators have no length. These
+checks bound local allocation; this adapter still does
 not authenticate content or provide transport backpressure.
 
 ## Reproducible execution benchmark

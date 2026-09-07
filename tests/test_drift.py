@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -10,6 +10,7 @@ from stream_quilt import (
     ClockDrift,
     DriftEstimate,
     Event,
+    OffsetEstimate,
     WatermarkAligner,
     align_events,
     estimate_drift,
@@ -52,6 +53,17 @@ def estimate(**overrides):
     }
     values.update(overrides)
     return DriftEstimate(**values)
+
+
+def offset_estimate(**overrides):
+    values = {
+        "offset_ms": 10.0,
+        "anchors_used": 3,
+        "median_absolute_deviation_ms": 0.5,
+        "max_residual_ms": 2.0,
+    }
+    values.update(overrides)
+    return OffsetEstimate(**values)
 
 
 # --- fitting --------------------------------------------------------------------------
@@ -171,6 +183,46 @@ def test_anchor_count_ceiling_is_enforced():
         estimate_drift(too_many)
 
 
+def test_anchor_generators_stop_at_the_resource_ceiling(monkeypatch):
+    consumed = {"offset": 0, "drift": 0}
+
+    def anchors_forever(kind):
+        index = 0
+        while True:
+            consumed[kind] += 1
+            yield (float(index + 1), float(index))
+            index += 1
+
+    monkeypatch.setattr("stream_quilt.clock.MAX_EVENTS", 2)
+    with pytest.raises(ValidationError, match="at most 2 clock anchors"):
+        estimate_offset(anchors_forever("offset"))
+    assert consumed["offset"] == 3
+
+    monkeypatch.setattr("stream_quilt.clock.MAX_DRIFT_ANCHORS", 5)
+    with pytest.raises(ValidationError, match="at most 5 clock anchors"):
+        estimate_drift(anchors_forever("drift"))
+    assert consumed["drift"] == 6
+
+
+def test_anchor_pair_validation_never_trusts_len_or_consumes_past_three_items():
+    class MisleadingPair:
+        def __init__(self):
+            self.consumed = 0
+
+        def __len__(self):
+            raise AssertionError("anchor validation must not trust __len__")
+
+        def __iter__(self):
+            while True:
+                self.consumed += 1
+                yield self.consumed
+
+    pair = MisleadingPair()
+    with pytest.raises(ValidationError, match="two timestamps"):
+        estimate_offset([pair])  # type: ignore[list-item]
+    assert pair.consumed == 3
+
+
 @pytest.mark.parametrize(
     "bad", [(1.0,), (1.0, "x"), (1.0, float("nan")), 7, (1.0, True), (10**400, 0.0)]
 )
@@ -231,6 +283,59 @@ def test_drift_estimate_revalidates_replacement():
         replace(estimate(), rate_ppm=MAX_DRIFT_RATE_PPM * 2)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"offset_ms": float("inf")}, "offset_ms must be finite"),
+        ({"anchors_used": 0}, "anchors_used must be an integer"),
+        ({"anchors_used": True}, "anchors_used must be an integer"),
+        ({"median_absolute_deviation_ms": -1}, "residuals must be non-negative"),
+        ({"max_residual_ms": 0.1}, "residuals must be non-negative"),
+        ({"max_residual_ms": float("nan")}, "max_residual_ms must be finite"),
+    ],
+)
+def test_offset_estimate_validates_direct_construction(overrides, message):
+    with pytest.raises(ValidationError, match=message):
+        offset_estimate(**overrides)
+
+
+def test_offset_estimate_revalidates_replace_and_serializes_all_evidence():
+    result = offset_estimate()
+    assert result.to_dict() == {
+        "offset_ms": 10.0,
+        "anchors_used": 3,
+        "median_absolute_deviation_ms": 0.5,
+        "max_residual_ms": 2.0,
+    }
+    with pytest.raises(ValidationError, match="residuals"):
+        replace(result, max_residual_ms=0.1)
+    object.__setattr__(result, "anchors_used", 0)
+    with pytest.raises(ValidationError, match="anchors_used"):
+        result.to_dict()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"anchors_used": MAX_DRIFT_ANCHORS + 1},
+        {"anchors_used": 5, "pairs_used": 5},
+        {"anchors_used": 5, "pairs_used": 11},
+    ],
+)
+def test_drift_estimate_rejects_impossible_evidence_counts(overrides):
+    with pytest.raises(ValidationError, match=r"anchors_used|pairs_used"):
+        estimate(**overrides)
+
+
+def test_drift_estimate_public_operations_revalidate_tampered_evidence():
+    result = estimate()
+    object.__setattr__(result, "pairs_used", 1)
+    with pytest.raises(ValidationError, match="pairs_used"):
+        result.to_dict()
+    with pytest.raises(ValidationError, match="pairs_used"):
+        result.as_correction()
+
+
 # --- the correction as a model --------------------------------------------------------
 
 
@@ -238,6 +343,19 @@ def test_zero_rate_correction_is_exactly_a_constant_offset():
     drift = ClockDrift(rate_ppm=0.0, offset_ms=-40.0, epoch_ms=1234.5)
     assert drift.offset_at(0.0) == -40.0
     assert drift.offset_at(9_999_999.0) == -40.0
+
+
+def test_clock_drift_is_immutable_and_revalidates_replace():
+    correction = ClockDrift(rate_ppm=10, offset_ms=2, epoch_ms=3)
+    with pytest.raises(FrozenInstanceError):
+        correction.rate_ppm = 20  # type: ignore[misc]
+    with pytest.raises(ValidationError, match="must be within"):
+        replace(correction, rate_ppm=MAX_DRIFT_RATE_PPM + 1)
+    object.__setattr__(correction, "rate_ppm", MAX_DRIFT_RATE_PPM + 1)
+    with pytest.raises(ValidationError, match="must be within"):
+        correction.offset_at(10)
+    with pytest.raises(ValidationError, match="must be within"):
+        correction.to_dict()
 
 
 def test_correction_grows_with_observed_time():

@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import pairwise
 from types import MappingProxyType
 from typing import Any, Literal, TypeVar
 
@@ -128,7 +129,9 @@ def _number_mapping(value: Any, name: str, *, positive: bool) -> Mapping[str, fl
     if len(value) > MAX_MAPPING_ENTRIES:
         raise ValidationError(f"{name} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
     result: dict[str, float] = {}
-    for raw_key, raw_number in value.items():
+    for index, (raw_key, raw_number) in enumerate(value.items()):
+        if index == MAX_MAPPING_ENTRIES:
+            raise ValidationError(f"{name} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
         key = _label(raw_key, f"{name} key")
         if key in result:
             raise ValidationError(f"{name} contains duplicate key {key!r}")
@@ -146,7 +149,9 @@ def _drift_mapping(value: Any, name: str) -> Mapping[str, ClockDrift]:
     if len(value) > MAX_MAPPING_ENTRIES:
         raise ValidationError(f"{name} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
     result: dict[str, ClockDrift] = {}
-    for raw_key, raw_drift in value.items():
+    for index, (raw_key, raw_drift) in enumerate(value.items()):
+        if index == MAX_MAPPING_ENTRIES:
+            raise ValidationError(f"{name} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
         key = _label(raw_key, f"{name} key")
         if key in result:
             raise ValidationError(f"{name} contains duplicate key {key!r}")
@@ -161,8 +166,10 @@ def _drift_mapping(value: Any, name: str) -> Mapping[str, ClockDrift]:
 
 
 def _freeze_event_data(value: Any) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+    if not isinstance(value, Mapping):
         raise ValidationError("event data must be a mapping with string keys")
+    if len(value) > MAX_MAPPING_ENTRIES:
+        raise ValidationError(f"event data exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
     budget = [0]
     active: set[int] = set()
     frozen = _freeze_json(value, depth=0, budget=budget, active=active, path="event data")
@@ -217,7 +224,9 @@ def _freeze_json(
         active.add(identity)
         try:
             result: dict[str, Any] = {}
-            for key, child in value.items():
+            for index, (key, child) in enumerate(value.items()):
+                if index == MAX_MAPPING_ENTRIES:
+                    raise ValidationError(f"{path} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
                 if not isinstance(key, str):
                     raise ValidationError(f"{path} object keys must be strings")
                 if len(key) > MAX_TEXT_LENGTH:
@@ -292,33 +301,32 @@ class Event:
 
     @property
     def end_ms(self) -> float:
-        return self.timestamp_ms + self.duration_ms
+        timestamp = _any_finite(self.timestamp_ms, "event timestamp_ms")
+        duration = _finite(self.duration_ms, "event duration_ms")
+        end = timestamp + duration
+        if not math.isfinite(end):
+            raise ValidationError("event end time must be finite")
+        return end
 
     def shifted(self, offset_ms: float) -> Event:
         """Return an event on the shared timeline."""
 
+        checked = _snapshot_event(self)
         offset = _any_finite(offset_ms, "offset_ms")
-        shifted = self.timestamp_ms + offset
+        shifted = checked.timestamp_ms + offset
         if not math.isfinite(shifted):
             raise ValidationError("shifted event timestamp must be finite")
         return Event(
-            id=self.id,
-            stream=self.stream,
-            modality=self.modality,
+            id=checked.id,
+            stream=checked.stream,
+            modality=checked.modality,
             timestamp_ms=shifted,
-            duration_ms=self.duration_ms,
-            data=self.data,
+            duration_ms=checked.duration_ms,
+            data=checked.data,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "stream": self.stream,
-            "modality": self.modality,
-            "timestamp_ms": self.timestamp_ms,
-            "duration_ms": self.duration_ms,
-            "data": _thaw_json(self.data),
-        }
+        return _event_to_dict(_snapshot_event(self))
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,17 +361,19 @@ class ClockDrift:
     def offset_at(self, observed_ms: float) -> float:
         """Return the offset to add to one observed timestamp on this clock."""
 
+        checked = _snapshot_clock_drift(self)
         observed = _any_finite(observed_ms, "observed_ms")
-        offset = self.offset_ms + self.rate_ppm * 1e-6 * (observed - self.epoch_ms)
+        offset = checked.offset_ms + checked.rate_ppm * 1e-6 * (observed - checked.epoch_ms)
         if not math.isfinite(offset):
             raise ValidationError("clock drift correction must remain finite")
         return offset
 
     def to_dict(self) -> dict[str, Any]:
+        checked = _snapshot_clock_drift(self)
         return {
-            "rate_ppm": self.rate_ppm,
-            "offset_ms": self.offset_ms,
-            "epoch_ms": self.epoch_ms,
+            "rate_ppm": checked.rate_ppm,
+            "offset_ms": checked.offset_ms,
+            "epoch_ms": checked.epoch_ms,
         }
 
 
@@ -423,6 +433,8 @@ class AlignmentConfig:
         object.__setattr__(
             self, "gap_factor", _finite(self.gap_factor, "gap_factor", positive=True)
         )
+        if self.gap_factor <= 1:
+            raise ValidationError("gap_factor must be greater than 1")
         if not isinstance(self.late_policy, str) or self.late_policy not in {
             "reject",
             "drop",
@@ -510,10 +522,16 @@ class AlignedWindow:
         end = _any_finite(self.end_ms, "window end_ms")
         if end <= start:
             raise ValidationError("window end_ms must be greater than start_ms")
-        events = _bounded_tuple(self.events, "window events", Event, MAX_EVENTS_PER_WINDOW)
+        raw_events = _bounded_tuple(self.events, "window events", Event, MAX_EVENTS_PER_WINDOW)
+        events = tuple(_snapshot_event(event) for event in raw_events)
         if len({event.id for event in events}) != len(events):
             raise ValidationError("window events must not contain duplicate event ids")
         missing = _label_tuple(self.missing_streams, "missing_streams", MAX_STREAMS)
+        if any(not _overlaps_bounds(event, start, end) for event in events):
+            raise ValidationError("every window event must overlap the half-open window bounds")
+        present = {event.stream for event in events}
+        if present & set(missing):
+            raise ValidationError("missing_streams cannot name a stream present in window events")
         object.__setattr__(self, "start_ms", start)
         object.__setattr__(self, "end_ms", end)
         object.__setattr__(self, "events", events)
@@ -521,22 +539,15 @@ class AlignedWindow:
 
     @property
     def complete(self) -> bool:
-        return not self.missing_streams
+        return not _snapshot_window(self).missing_streams
 
     @property
     def modalities(self) -> tuple[str, ...]:
-        return tuple(sorted({event.modality for event in self.events}))
+        checked = _snapshot_window(self)
+        return tuple(sorted({event.modality for event in checked.events}))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "index": self.index,
-            "start_ms": self.start_ms,
-            "end_ms": self.end_ms,
-            "complete": self.complete,
-            "missing_streams": list(self.missing_streams),
-            "modalities": list(self.modalities),
-            "events": [event.to_dict() for event in self.events],
-        }
+        return _window_to_dict(_snapshot_window(self))
 
 
 @dataclass(frozen=True, slots=True)
@@ -563,15 +574,35 @@ class Gap:
             raise ValidationError("gap end_ms must be greater than start_ms")
         if self.observed_ms <= self.expected_ms:
             raise ValidationError("gap observed_ms must be greater than expected_ms")
+        implied_observed = self.end_ms - self.start_ms + self.expected_ms
+        if not math.isfinite(implied_observed):
+            raise ValidationError(
+                "gap boundaries must satisfy observed_ms = end_ms - start_ms + expected_ms"
+            )
+        rounding_tolerance = max(
+            1e-9,
+            sum(
+                math.ulp(value)
+                for value in (
+                    self.start_ms,
+                    self.end_ms,
+                    self.expected_ms,
+                    implied_observed,
+                )
+            ),
+        )
+        if not math.isclose(
+            self.observed_ms,
+            implied_observed,
+            rel_tol=0.0,
+            abs_tol=rounding_tolerance,
+        ):
+            raise ValidationError(
+                "gap boundaries must satisfy observed_ms = end_ms - start_ms + expected_ms"
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "stream": self.stream,
-            "start_ms": self.start_ms,
-            "end_ms": self.end_ms,
-            "observed_ms": self.observed_ms,
-            "expected_ms": self.expected_ms,
-        }
+        return _gap_to_dict(_snapshot_gap(self))
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,15 +616,53 @@ class AlignmentResult:
     unassigned_event_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        windows = _bounded_tuple(self.windows, "windows", AlignedWindow, MAX_OUTPUT_WINDOWS)
-        gaps = _bounded_tuple(self.gaps, "gaps", Gap, MAX_RESULT_GAPS)
+        raw_windows = _bounded_tuple(self.windows, "windows", AlignedWindow, MAX_OUTPUT_WINDOWS)
+        raw_gaps = _bounded_tuple(self.gaps, "gaps", Gap, MAX_RESULT_GAPS)
+        window_list: list[AlignedWindow] = []
+        event_by_id: dict[str, Event] = {}
+        for raw_window in raw_windows:
+            window = _snapshot_window(raw_window)
+            if window_list and (
+                window.index <= window_list[-1].index or window.start_ms <= window_list[-1].start_ms
+            ):
+                raise ValidationError("windows must be ordered by increasing index and start_ms")
+            for event in window.events:
+                existing = event_by_id.get(event.id)
+                if existing is None:
+                    if len(event_by_id) == MAX_EVENTS:
+                        raise ValidationError(
+                            f"window events exceed the {MAX_EVENTS}-distinct-event limit"
+                        )
+                    event_by_id[event.id] = event
+                elif existing != event:
+                    raise ValidationError(
+                        f"event id {event.id!r} must have the same event snapshot in every window"
+                    )
+            window_list.append(window)
+        windows = tuple(window_list)
+        gaps = tuple(_snapshot_gap(gap) for gap in raw_gaps)
         if len({window.index for window in windows}) != len(windows):
             raise ValidationError("windows must not contain duplicate indexes")
+        if any(
+            later.index <= earlier.index or later.start_ms <= earlier.start_ms
+            for earlier, later in pairwise(windows)
+        ):
+            raise ValidationError("windows must be ordered by increasing index and start_ms")
         dropped = _label_tuple(self.dropped_event_ids, "dropped_event_ids", MAX_EVENTS)
         accepted = _label_tuple(self.accepted_late_event_ids, "accepted_late_event_ids", MAX_EVENTS)
         unassigned = _label_tuple(self.unassigned_event_ids, "unassigned_event_ids", MAX_EVENTS)
-        if set(dropped) & (set(accepted) | set(unassigned)):
-            raise ValidationError("dropped event ids cannot also be accepted or unassigned")
+        dropped_set = set(dropped)
+        accepted_set = set(accepted)
+        unassigned_set = set(unassigned)
+        if dropped_set & (accepted_set | unassigned_set) or accepted_set & unassigned_set:
+            raise ValidationError(
+                "dropped, accepted-late, and unassigned event ids must be disjoint"
+            )
+        window_event_ids = set(event_by_id)
+        if window_event_ids & (dropped_set | unassigned_set):
+            raise ValidationError("dropped or unassigned event ids cannot appear in a window")
+        if not accepted_set <= window_event_ids:
+            raise ValidationError("every accepted-late event id must appear in a window")
         object.__setattr__(self, "windows", windows)
         object.__setattr__(self, "gaps", gaps)
         object.__setattr__(self, "dropped_event_ids", dropped)
@@ -601,10 +670,112 @@ class AlignmentResult:
         object.__setattr__(self, "unassigned_event_ids", unassigned)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "windows": [window.to_dict() for window in self.windows],
-            "gaps": [gap.to_dict() for gap in self.gaps],
-            "dropped_event_ids": list(self.dropped_event_ids),
-            "accepted_late_event_ids": list(self.accepted_late_event_ids),
-            "unassigned_event_ids": list(self.unassigned_event_ids),
-        }
+        return _result_to_dict(_snapshot_result(self))
+
+
+def _overlaps_bounds(event: Event, start: float, end: float) -> bool:
+    if event.duration_ms == 0:
+        return start <= event.timestamp_ms < end
+    return event.timestamp_ms < end and event.timestamp_ms + event.duration_ms > start
+
+
+def _snapshot_event(value: Event) -> Event:
+    """Revalidate and detach an event at a public model boundary."""
+
+    return Event(
+        id=value.id,
+        stream=value.stream,
+        modality=value.modality,
+        timestamp_ms=value.timestamp_ms,
+        duration_ms=value.duration_ms,
+        data=value.data,
+    )
+
+
+def _snapshot_clock_drift(value: ClockDrift) -> ClockDrift:
+    """Revalidate a clock correction before a public operation."""
+
+    return ClockDrift(
+        rate_ppm=value.rate_ppm,
+        offset_ms=value.offset_ms,
+        epoch_ms=value.epoch_ms,
+    )
+
+
+def _snapshot_window(value: AlignedWindow) -> AlignedWindow:
+    """Revalidate and detach a window, including every nested event."""
+
+    return AlignedWindow(
+        index=value.index,
+        start_ms=value.start_ms,
+        end_ms=value.end_ms,
+        events=value.events,
+        missing_streams=value.missing_streams,
+    )
+
+
+def _snapshot_gap(value: Gap) -> Gap:
+    """Revalidate and detach a gap diagnostic."""
+
+    return Gap(
+        stream=value.stream,
+        start_ms=value.start_ms,
+        end_ms=value.end_ms,
+        observed_ms=value.observed_ms,
+        expected_ms=value.expected_ms,
+    )
+
+
+def _snapshot_result(value: AlignmentResult) -> AlignmentResult:
+    """Revalidate and detach a complete result before publication."""
+
+    return AlignmentResult(
+        windows=value.windows,
+        gaps=value.gaps,
+        dropped_event_ids=value.dropped_event_ids,
+        accepted_late_event_ids=value.accepted_late_event_ids,
+        unassigned_event_ids=value.unassigned_event_ids,
+    )
+
+
+def _event_to_dict(value: Event) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "stream": value.stream,
+        "modality": value.modality,
+        "timestamp_ms": value.timestamp_ms,
+        "duration_ms": value.duration_ms,
+        "data": _thaw_json(value.data),
+    }
+
+
+def _window_to_dict(value: AlignedWindow) -> dict[str, Any]:
+    return {
+        "index": value.index,
+        "start_ms": value.start_ms,
+        "end_ms": value.end_ms,
+        "complete": not value.missing_streams,
+        "missing_streams": list(value.missing_streams),
+        "modalities": sorted({event.modality for event in value.events}),
+        "events": [_event_to_dict(event) for event in value.events],
+    }
+
+
+def _gap_to_dict(value: Gap) -> dict[str, Any]:
+    return {
+        "stream": value.stream,
+        "start_ms": value.start_ms,
+        "end_ms": value.end_ms,
+        "observed_ms": value.observed_ms,
+        "expected_ms": value.expected_ms,
+    }
+
+
+def _result_to_dict(value: AlignmentResult) -> dict[str, Any]:
+    return {
+        "windows": [_window_to_dict(window) for window in value.windows],
+        "gaps": [_gap_to_dict(gap) for gap in value.gaps],
+        "dropped_event_ids": list(value.dropped_event_ids),
+        "accepted_late_event_ids": list(value.accepted_late_event_ids),
+        "unassigned_event_ids": list(value.unassigned_event_ids),
+    }

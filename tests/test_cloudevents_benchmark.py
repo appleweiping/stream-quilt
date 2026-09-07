@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from stream_quilt.benchmark import (
 from stream_quilt.cli import main
 from stream_quilt.cloudevents import cloudevent_from_dict, load_cloudevents
 from stream_quilt.errors import OutputError, ValidationError
+from stream_quilt.limits import MAX_STREAMS
 
 
 def cloud_event(**overrides):
@@ -49,6 +51,21 @@ def test_cloudevent_maps_identity_time_extensions_and_payload():
         "stream": "front-camera",
         "traceparent": "00-abc-def-01",
     }
+
+
+def test_long_valid_source_and_id_use_a_stable_bounded_identity() -> None:
+    source = "/" + "s" * 1_023
+    event_id = "é" * 1_024
+    first = cloudevent_from_dict(cloud_event(source=source, id=event_id))
+    second = cloudevent_from_dict(cloud_event(source=source, id=event_id))
+    changed = cloudevent_from_dict(cloud_event(source=source, id="è" + event_id[1:]))
+
+    assert first.id == second.id
+    assert first.id.startswith("ce-sha256:")
+    assert len(first.id) < 1_024
+    assert first.id != changed.id
+    assert first.data["cloudevent"]["source"] == source
+    assert first.data["cloudevent"]["id"] == event_id
 
 
 def test_cloudevent_defaults_stream_and_modality_to_core_attributes():
@@ -94,6 +111,7 @@ def test_cloudevent_validates_media_type_and_absolute_dataschema():
         ({"datacontenttype": "not a media type"}, "media type"),
         ({"datacontenttype": "text/plain; bad"}, "media type"),
         ({"dataschema": "1bad:value"}, "absolute URI"),
+        ({"dataschema": "https://schema.example/v1#fragment"}, "absolute URI"),
     ):
         with pytest.raises(ValidationError, match=message):
             cloudevent_from_dict(cloud_event(**override))
@@ -128,6 +146,77 @@ def test_cloudevent_accepts_and_preserves_valid_base64():
     payload.pop("data")
     event = cloudevent_from_dict(payload)
     assert event.data["payload_base64"] == "aGVsbG8="
+
+
+def test_cloudevent_integer_extensions_use_the_normative_int32_range():
+    low = cloudevent_from_dict(cloud_event(sequence=-(2**31)))
+    high = cloudevent_from_dict(cloud_event(sequence=2**31 - 1, durationms=2**31 - 1))
+    assert low.data["extensions"]["sequence"] == -(2**31)
+    assert high.data["extensions"]["sequence"] == 2**31 - 1
+    assert high.duration_ms == float(2**31 - 1)
+    for payload in (
+        cloud_event(sequence=-(2**31) - 1),
+        cloud_event(sequence=2**31),
+        cloud_event(durationms=2**31),
+    ):
+        with pytest.raises(ValidationError, match=r"CloudEvents Integer|Integer range"):
+            cloudevent_from_dict(payload)
+
+
+def test_cloudevent_string_extensions_allow_empty_but_reject_forbidden_unicode():
+    event = cloudevent_from_dict(cloud_event(optionalnote="", **{"1note": "starts-with-digit"}))
+    assert event.data["extensions"]["optionalnote"] == ""
+    assert event.data["extensions"]["1note"] == "starts-with-digit"
+    for value in ("bad\u0085", "bad\ufdd0", "bad\ufffe", "bad\U0001ffff"):
+        with pytest.raises(ValidationError, match="forbidden by CloudEvents String"):
+            cloudevent_from_dict(cloud_event(optionalnote=value))
+
+
+def test_cloudevent_adapter_never_silently_trims_context_or_mapping_labels():
+    for payload in (
+        cloud_event(source=" /camera/front"),
+        cloud_event(time=" 2026-01-02T03:04:05Z"),
+        cloud_event(stream=" camera"),
+        cloud_event(modality="video "),
+    ):
+        with pytest.raises(ValidationError):
+            cloudevent_from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/relative/path",
+        "relative/path?query=a:b?c#fragment/ok?yes",
+        "https://user:pass@[2001:db8::1]:443/path?x=1#frame",
+        "https://[2001:db8::1]:/path",
+        "https://[v1.fe80]:80/path",
+        "https://[V1.fe80]:80/path",
+        "urn:example:sensor:front",
+        "#fragment-only",
+    ],
+)
+def test_cloudevent_accepts_valid_rfc3986_uri_references(source):
+    event = cloudevent_from_dict(cloud_event(source=source, stream="front"))
+    assert event.data["cloudevent"]["source"] == source
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "https://example.test/a#one#two",
+        "1bad:value/path",
+        "https://[not-an-ipv6]/path",
+        "https://[fe80::1%25eth0]/path",
+        "https://host:port/path",
+        "https://user@@host/path",
+        "/bad/%escape",
+        "/raw/[bracket]",
+    ],
+)
+def test_cloudevent_rejects_invalid_rfc3986_uri_references(source):
+    with pytest.raises(ValidationError, match="URI-reference"):
+        cloudevent_from_dict(cloud_event(source=source))
 
 
 def test_cloudevent_rejects_invalid_base64_without_data():
@@ -446,6 +535,18 @@ def test_public_alignment_benchmark_rejects_bad_collection_shapes():
     ):
         with pytest.raises(ValueError):
             factory()
+
+
+def test_public_benchmark_records_snapshot_nested_modes_and_revalidate_replace():
+    source = ModeBenchmark("offline", 1, 1, 1, 100, "a" * 64, 2)
+    result = AlignmentBenchmark(3, 1, 0, True, (source,))
+    object.__setattr__(source, "mode", "changed")
+    assert result.modes[0].mode == "offline"
+    with pytest.raises(ValueError, match="p95"):
+        replace(result.modes[0], median_runtime_ms=2)
+    object.__setattr__(result, "modes", result.modes * (MAX_STREAMS + 1))
+    with pytest.raises(ValueError, match="item limit"):
+        result.to_dict()
 
 
 def test_benchmark_rejects_more_streams_than_events():

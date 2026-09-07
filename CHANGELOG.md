@@ -4,6 +4,8 @@ This project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-07
+
 ### Added
 
 - Grid-aligned interval index for window membership. Each buffered event is stored once per node of
@@ -30,6 +32,12 @@ This project follows semantic versioning.
 
 ### Changed
 
+- Release engineering now uses a pinned Hatchling backend with explicit wheel and source-distribution
+  contents, deterministic build timestamps, locked-environment CI, installed-wheel checks, checksums,
+  and provenance attestations.
+- CloudEvents context validation now follows the signed 32-bit Integer, Unicode String, URI-reference,
+  and absolute `dataschema` contracts, with a deterministic SHA-256 fallback when a valid source/ID
+  pair would exceed the internal label ceiling after encoding.
 - A retention policy whose `horizon_ms` is shorter than `window_ms` is refused, because such a
   frontier could pass an event a still-open window can legitimately include.
 - Reaching `max_tracked_events` raises instead of forgetting a reported event ID.

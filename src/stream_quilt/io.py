@@ -148,7 +148,7 @@ def event_from_dict(payload: Any, *, path: str = "$event") -> Event:
     item = _mapping(payload, path)
     _reject_unknown(item, _EVENT_FIELDS, path)
     data = item.get("data", {})
-    if not isinstance(data, Mapping) or not all(isinstance(key, str) for key in data):
+    if not isinstance(data, Mapping):
         raise ValidationError(f"{path}.data must be an object with string keys")
     return Event(
         id=_text(item.get("id"), f"{path}.id"),
@@ -161,9 +161,18 @@ def event_from_dict(payload: Any, *, path: str = "$event") -> Event:
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+    if not isinstance(value, Mapping):
         raise ValidationError(f"{path} must be an object with string keys")
-    return value
+    if len(value) > MAX_MAPPING_ENTRIES:
+        raise ValidationError(f"{path} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
+    result: dict[str, Any] = {}
+    for index, (key, item) in enumerate(value.items()):
+        if index == MAX_MAPPING_ENTRIES:
+            raise ValidationError(f"{path} exceeds the {MAX_MAPPING_ENTRIES}-entry limit")
+        if not isinstance(key, str):
+            raise ValidationError(f"{path} must be an object with string keys")
+        result[key] = item
+    return result
 
 
 def _reject_unknown(item: Mapping[str, Any], allowed: set[str], path: str) -> None:
@@ -222,7 +231,12 @@ def _string_sequence(value: Any, path: str) -> tuple[str, ...]:
         raise ValidationError(f"{path} must be an array")
     if len(value) > MAX_STREAMS:
         raise ValidationError(f"{path} exceeds the {MAX_STREAMS}-item limit")
-    return tuple(_text(item, f"{path}[{index}]") for index, item in enumerate(value))
+    result: list[str] = []
+    for index, item in enumerate(value):
+        if index == MAX_STREAMS:
+            raise ValidationError(f"{path} exceeds the {MAX_STREAMS}-item limit")
+        result.append(_text(item, f"{path}[{index}]"))
+    return tuple(result)
 
 
 def _number_mapping(value: Any, path: str, *, positive: bool) -> dict[str, float]:

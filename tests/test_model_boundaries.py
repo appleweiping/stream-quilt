@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 from stream_quilt.aligner import WatermarkAligner, align_events
-from stream_quilt.cloudevents import load_cloudevents
+from stream_quilt.cloudevents import cloudevent_from_dict, load_cloudevents
 from stream_quilt.errors import ValidationError
-from stream_quilt.io import load_config, load_events
+from stream_quilt.io import config_from_dict, event_from_dict, load_config, load_events
 from stream_quilt.limits import MAX_JSON_DEPTH, MAX_STREAMS, MAX_TEXT_LENGTH
 from stream_quilt.models import (
     AlignedWindow,
@@ -133,6 +134,156 @@ def test_window_and_result_snapshot_mutable_collections() -> None:
     assert result.unassigned_event_ids == ("u",)
 
 
+def test_window_and_result_deep_snapshot_nested_records() -> None:
+    source_event = Event("e", "camera", "video", 10, data={"value": "original"})
+    source_window = AlignedWindow(0, 0, 100, (source_event,), ())
+    source_gap = Gap("camera", 20, 30, 20, 10)
+    result = AlignmentResult((source_window,), (source_gap,))
+
+    object.__setattr__(source_event, "timestamp_ms", 90)
+    object.__setattr__(source_event, "data", {"value": "changed"})
+    object.__setattr__(source_window, "start_ms", 5)
+    object.__setattr__(source_gap, "stream", "changed")
+
+    assert result.windows[0].start_ms == 0
+    assert result.windows[0].events[0].timestamp_ms == 10
+    assert result.windows[0].events[0].data == {"value": "original"}
+    assert result.gaps[0].stream == "camera"
+
+
+def test_output_serialization_revalidates_tampered_nested_records() -> None:
+    event = Event("e", "camera", "video", 10)
+    window = AlignedWindow(0, 0, 100, (event,), ())
+    gap = Gap("camera", 20, 30, 20, 10)
+    result = AlignmentResult((window,), (gap,))
+
+    object.__setattr__(result.windows[0], "events", (Event("outside", "camera", "video", 100),))
+    with pytest.raises(ValidationError, match="overlap"):
+        result.to_dict()
+
+    object.__setattr__(gap, "observed_ms", 30)
+    with pytest.raises(ValidationError, match="boundaries"):
+        gap.to_dict()
+
+    object.__setattr__(event, "duration_ms", -1)
+    with pytest.raises(ValidationError, match="duration_ms"):
+        event.to_dict()
+
+
+def test_public_properties_and_operations_revalidate_tampered_records() -> None:
+    event = Event("e", "camera", "video", 10)
+    object.__setattr__(event, "duration_ms", -1)
+    with pytest.raises(ValidationError, match="duration_ms"):
+        _ = event.end_ms
+    with pytest.raises(ValidationError, match="duration_ms"):
+        event.shifted(1)
+
+    window = AlignedWindow(0, 0, 100, (Event("nested", "camera", "video", 10),), ())
+    object.__setattr__(window.events[0], "duration_ms", -1)
+    with pytest.raises(ValidationError, match="duration_ms"):
+        _ = window.complete
+    with pytest.raises(ValidationError, match="duration_ms"):
+        _ = window.modalities
+
+
+def test_window_rejects_events_outside_bounds_and_present_missing_streams() -> None:
+    before = Event("before", "camera", "video", -1)
+    at_end = Event("end", "camera", "video", 100)
+    with pytest.raises(ValidationError, match="overlap"):
+        AlignedWindow(0, 0, 100, (before,), ())
+    with pytest.raises(ValidationError, match="overlap"):
+        AlignedWindow(0, 0, 100, (at_end,), ())
+    with pytest.raises(ValidationError, match="missing_streams"):
+        AlignedWindow(0, 0, 100, (Event("inside", "camera", "video", 10),), ("camera",))
+
+
+def test_gap_rejects_diagnostics_inconsistent_with_its_boundaries() -> None:
+    with pytest.raises(ValidationError, match="boundaries"):
+        Gap("camera", start_ms=10, end_ms=20, observed_ms=25, expected_ms=5)
+    assert Gap("camera", start_ms=10, end_ms=20, observed_ms=15, expected_ms=5)
+
+
+def test_gap_accepts_relationship_at_large_timestamp_precision() -> None:
+    previous = 1e15
+    current = previous + 0.25
+    expected = 0.1
+    observed = current - previous
+    gap = Gap(
+        "camera",
+        start_ms=previous + expected,
+        end_ms=current,
+        observed_ms=observed,
+        expected_ms=expected,
+    )
+    assert gap.observed_ms == observed
+
+
+def test_gap_rejects_large_absolute_contradictions_and_boundary_overflow() -> None:
+    with pytest.raises(ValidationError, match="boundaries"):
+        Gap(
+            "camera",
+            start_ms=0,
+            end_ms=1e12,
+            observed_ms=1e12 + 0.5,
+            expected_ms=1,
+        )
+    with pytest.raises(ValidationError, match="boundaries"):
+        Gap(
+            "camera",
+            start_ms=-1e308,
+            end_ms=1e308,
+            observed_ms=1e308,
+            expected_ms=1,
+        )
+
+
+def test_result_rejects_conflicting_event_associations() -> None:
+    event = Event("e", "camera", "video", 10)
+    window = AlignedWindow(0, 0, 100, (event,), ())
+    with pytest.raises(ValidationError, match="disjoint"):
+        AlignmentResult((window,), (), accepted_late_event_ids=("e",), unassigned_event_ids=("e",))
+    with pytest.raises(ValidationError, match="cannot appear"):
+        AlignmentResult((window,), (), dropped_event_ids=("e",))
+    with pytest.raises(ValidationError, match="cannot appear"):
+        AlignmentResult((window,), (), unassigned_event_ids=("e",))
+    with pytest.raises(ValidationError, match="must appear"):
+        AlignmentResult((window,), (), accepted_late_event_ids=("missing",))
+
+
+def test_result_rejects_reordered_windows_and_conflicting_event_snapshots() -> None:
+    first = Event("e", "camera", "video", 10, data={"value": 1})
+    changed = Event("e", "camera", "video", 110, data={"value": 2})
+    first_window = AlignedWindow(0, 0, 100, (first,), ())
+    changed_window = AlignedWindow(1, 100, 200, (changed,), ())
+    with pytest.raises(ValidationError, match="same event snapshot"):
+        AlignmentResult((first_window, changed_window), ())
+    with pytest.raises(ValidationError, match="ordered"):
+        AlignmentResult((changed_window, first_window), ())
+
+
+def test_result_bounds_its_distinct_event_index_before_materializing(monkeypatch) -> None:
+    first = AlignedWindow(0, 0, 100, (Event("a", "camera", "video", 10),), ())
+    second = AlignedWindow(1, 100, 200, (Event("b", "camera", "video", 110),), ())
+    monkeypatch.setattr("stream_quilt.models.MAX_EVENTS", 1)
+    with pytest.raises(ValidationError, match="distinct-event limit"):
+        AlignmentResult((first, second), ())
+
+
+def test_event_and_output_models_revalidate_replacement() -> None:
+    event = Event("e", "camera", "video", 10)
+    window = AlignedWindow(0, 0, 100, (event,), ())
+    gap = Gap("camera", 20, 30, 20, 10)
+    result = AlignmentResult((window,), (gap,))
+    with pytest.raises(ValidationError, match="duration_ms"):
+        replace(event, duration_ms=-1)
+    with pytest.raises(ValidationError, match="overlap"):
+        replace(window, events=(Event("outside", "camera", "video", 100),))
+    with pytest.raises(ValidationError, match="boundaries"):
+        replace(gap, observed_ms=30)
+    with pytest.raises(ValidationError, match="must appear"):
+        replace(result, accepted_late_event_ids=("missing",))
+
+
 def test_shift_rejects_nonfinite_offset_and_preserves_data() -> None:
     event = Event("e", "s", "m", 1, data={"items": [1]})
     shifted = event.shifted(2)
@@ -178,6 +329,109 @@ def test_input_files_have_preparse_byte_limits(tmp_path, monkeypatch) -> None:
         load_events(events_path)
     with pytest.raises(ValidationError, match="byte limit"):
         load_cloudevents(cloud_path)
+
+
+class _UnboundedMapping(Mapping[str, object]):
+    """A hostile Mapping whose reported length hides an unbounded iterator."""
+
+    def __init__(self, prefix: dict[str, object]) -> None:
+        self.prefix = prefix
+
+    def __getitem__(self, key: str) -> object:
+        if key in self.prefix:
+            return self.prefix[key]
+        return ""
+
+    def __iter__(self) -> Iterator[str]:
+        yield from self.prefix
+        index = 0
+        while True:
+            yield f"extra{index}"
+            index += 1
+
+    def __len__(self) -> int:
+        return len(self.prefix)
+
+
+class _RepeatingMapping(Mapping[str, object]):
+    """A hostile Mapping that repeats one key forever while claiming to be empty."""
+
+    def __getitem__(self, key: str) -> object:
+        return "value"
+
+    def __iter__(self) -> Iterator[str]:
+        while True:
+            yield "same"
+
+    def __len__(self) -> int:
+        return 0
+
+
+class _UnboundedSequence(Sequence[str]):
+    """A hostile Sequence whose index iteration never raises IndexError."""
+
+    def __init__(self) -> None:
+        self.consumed = 0
+
+    def __getitem__(self, index):
+        self.consumed += 1
+        return f"stream{index}"
+
+    def __len__(self) -> int:
+        return 0
+
+
+def test_public_mapping_boundaries_stop_hostile_iterators(monkeypatch) -> None:
+    monkeypatch.setattr("stream_quilt.models.MAX_MAPPING_ENTRIES", 2)
+    with pytest.raises(ValidationError, match="entry limit"):
+        Event("e", "s", "m", 0, data=_UnboundedMapping({}))
+    nested = {
+        "id": "e",
+        "stream": "s",
+        "modality": "m",
+        "timestamp_ms": 0,
+        "data": _UnboundedMapping({}),
+    }
+    with pytest.raises(ValidationError, match="entry limit"):
+        event_from_dict(nested)
+
+    monkeypatch.setattr("stream_quilt.io.MAX_MAPPING_ENTRIES", 4)
+    native = _UnboundedMapping({"id": "e", "stream": "s", "modality": "m", "timestamp_ms": 0})
+    with pytest.raises(ValidationError, match="entry limit"):
+        event_from_dict(native)
+
+    monkeypatch.setattr("stream_quilt.cloudevents.MAX_MAPPING_ENTRIES", 5)
+    cloud = _UnboundedMapping(
+        {
+            "specversion": "1.0",
+            "id": "e",
+            "source": "/s",
+            "type": "t",
+            "time": "2026-01-01T00:00:00Z",
+        }
+    )
+    with pytest.raises(ValidationError, match="attribute limit"):
+        cloudevent_from_dict(cloud)
+
+
+def test_mapping_limits_count_consumed_items_even_when_keys_repeat(monkeypatch) -> None:
+    monkeypatch.setattr("stream_quilt.models.MAX_MAPPING_ENTRIES", 2)
+    with pytest.raises(ValidationError, match="entry limit"):
+        Event("e", "s", "m", 0, data=_RepeatingMapping())
+    monkeypatch.setattr("stream_quilt.io.MAX_MAPPING_ENTRIES", 2)
+    with pytest.raises(ValidationError, match="entry limit"):
+        event_from_dict(_RepeatingMapping())
+    monkeypatch.setattr("stream_quilt.cloudevents.MAX_MAPPING_ENTRIES", 2)
+    with pytest.raises(ValidationError, match="attribute limit"):
+        cloudevent_from_dict(_RepeatingMapping())
+
+
+def test_config_sequence_stops_when_a_sequence_lies_about_its_length(monkeypatch) -> None:
+    sequence = _UnboundedSequence()
+    monkeypatch.setattr("stream_quilt.io.MAX_STREAMS", 2)
+    with pytest.raises(ValidationError, match="item limit"):
+        config_from_dict({"window_ms": 1, "hop_ms": 1, "required_streams": sequence})
+    assert sequence.consumed == 3
 
 
 def test_parser_collection_and_record_limits(tmp_path, monkeypatch) -> None:

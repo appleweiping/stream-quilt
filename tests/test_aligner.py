@@ -272,6 +272,7 @@ def test_direct_event_validation(factory):
         lambda: config(allowed_lateness_ms=float("nan")),
         lambda: config(offsets_ms={"a": float("inf")}),
         lambda: config(expected_cadence_ms={"a": 0}),
+        lambda: config(gap_factor=1),
         lambda: config(required_streams=("a", "a")),
         lambda: config(max_output_windows=10**400),
     ],

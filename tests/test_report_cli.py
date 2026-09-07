@@ -121,6 +121,35 @@ def test_cli_run_writes_bundle(tmp_path, capsys, command):
     assert "aligned 11 events" in capsys.readouterr().out
 
 
+def test_cli_replay_applies_clock_drift_to_gap_diagnostics(tmp_path):
+    config_path = tmp_path / "config.json"
+    event_path = tmp_path / "events.jsonl"
+    config_path.write_text(
+        json.dumps(
+            {
+                "window_ms": 2_000,
+                "hop_ms": 2_000,
+                "clock_drifts": {"camera": {"rate_ppm": 10_000}},
+                "expected_cadence_ms": {"camera": 1_000},
+                "gap_factor": 1.005,
+            }
+        ),
+        encoding="utf-8",
+    )
+    events = [
+        {"id": "a", "stream": "camera", "modality": "video", "timestamp_ms": 0},
+        {"id": "b", "stream": "camera", "modality": "video", "timestamp_ms": 1_000},
+    ]
+    event_path.write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "output"
+    assert main(["replay", str(config_path), str(event_path), "--output", str(output)]) == 0
+    result = json.loads((output / "alignment.json").read_text(encoding="utf-8"))
+    assert result["gaps"][0]["observed_ms"] == 1_010
+
+
 def test_cli_demo_writes_reproducible_inputs(tmp_path):
     output = tmp_path / "demo"
     assert main(["demo", "--output", str(output), "--write-input"]) == 0
