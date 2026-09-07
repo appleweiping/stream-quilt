@@ -5,6 +5,8 @@ in SQLite. See [recovery and restart](docs/recovery.md) for the `resume` CLI and
 The [local dataflow API](docs/dataflow.md) also runs composable map/filter/flat-map
 operators and isolated keyed state with atomic per-input rollback and portable
 checkpoints. Its generalized flow checkpoints are separate from aligner recovery.
+Use [FlowJournal](docs/flow-journal.md) to atomically persist a general flow's
+source position, keyed state and local output records across process restarts.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 

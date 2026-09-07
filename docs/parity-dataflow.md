@@ -16,8 +16,8 @@ linear operator runtime. It does not implement a distributed dataflow engine.
 | `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map, explicit deletion/emission, per-input rollback and strict portable snapshots | Stateful flat-map/batch, notifications, EOF handling and partition ownership |
 | Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams` | Incremental keyed joins, final aggregation and collection contracts; cache expiration and enrichment error handling |
 | `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation | General window logic/aggregation, processing-time clocks, idle notification, mergeable state and window metadata streams |
-| `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers and one local transactional SQLite sink | Source/sink partition protocols, external offsets, connector cancellation/retry, Kafka serde and broker integration verification |
-| `recovery.py`, Rust recovery implementation | Portable strict aligner snapshots, atomic offset/state/output SQLite transactions, CAS writer conflicts and restart CLI | Distributed epochs, partition migration and recovery coordination, backup/retention policy and real external source/sink delivery contracts |
+| `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers; aligner/general-flow local transactional SQLite sinks | Source/sink partition protocols, external broker offsets, connector cancellation/retry, Kafka serde and broker integration verification |
+| `recovery.py`, Rust recovery implementation | Strict aligner and keyed-flow snapshots, atomic offset/state/output SQLite transactions, CAS writer conflicts; aligner restart CLI and general-flow restart API | Distributed epochs, partition migration and recovery coordination, backup/retention policy and real external source/sink delivery contracts |
 | Rust `worker.rs`, `run.rs`, `timely.rs`, `operators.rs` | Deterministic local partition assignment helper | Actual multi-process/multi-node operators, transport/exchange, progress coordination, worker failure handling and compiled hot paths |
 | `testing.py`, `run.py`, errors | CLI, independent expected windows, separate-process restart/crash/rollback tests | General flow test harness, worker/cluster launcher and cross-operator failure propagation contracts |
 | `visualize.py`, metrics, tracing and webserver | Local JSON/Markdown alignment diagnostics | Flow visualization, runtime metrics service, Jaeger/OTLP tracing, deployment and operational security |
@@ -62,9 +62,9 @@ strict checkpoint parsing and pull limits without an extra source read.
 See [dataflow contracts and limits](dataflow.md) and the executable
 `examples/keyed_totals.py`. These callbacks are trusted synchronous Python code,
 not a process or wall-time sandbox. External side effects and source offsets
-are outside the per-input rollback boundary. General-flow durable delivery,
-notifications and distributed state remain open rather than being inferred
-from the separate `WatermarkAligner` recovery implementation.
+are outside the per-input rollback boundary. General-flow local persistence is
+now available through the separate `FlowJournal` API below. External delivery,
+notifications and distributed state remain open.
 
 Verification for this increment (Windows, Python 3.12.13): 591 full tests passed,
 96.02% combined statement/branch coverage, with 57 focused operator tests and
@@ -74,3 +74,28 @@ also ran a seeded three-key, 100-input oracle with 15 rejected transactions and
 repeated snapshot restores, plus generator failure/early-close and counter
 overflow checks. Its expected outputs/state/counters matched; no reference
 throughput equivalence is asserted.
+
+## General-flow journal increment
+
+`FlowJournal` adds its own strict SQLite format, not an alias for the aligner
+store. It runs callbacks on detached state, then uses generation CAS to publish
+all source-offset/state/output changes atomically without automatically retrying
+callbacks. Tests verify filtered/expanded source positions, races, re-open and
+separate-process recovery, actual death inside a partially written SQL
+transaction, snapshot pagination under WAL, early reader close, resource limits,
+rehashed malformed records and pre-materialization SQLite byte guards.
+
+The contract and operational limits are in [flow-journal.md](flow-journal.md).
+The application supplies a replayable source and its identity. This establishes
+local journal semantics, not broker acknowledgement, source partition ownership,
+distributed epochs, retention/compaction or full Bytewax recovery equivalence.
+
+Final verification of this increment (Windows, Python 3.12.13): 648 full tests
+passed, 96.32% combined coverage and 100% statement/branch coverage for the new
+journal module. Ruff lint/format, strict Mypy, Bandit, wheel/sdist build, Twine
+and wheel-content checks passed. The 57 focused journal cases include the
+review-discovered setup-connection leak and impossible generation-zero seeded
+state. Independent checks matched a 55-record keyed-sum oracle over eight
+restarts, a real two-thread CAS race and process death after both output and
+head SQL writes. No remote matrix result or throughput equivalence is implied
+by these local checks.
