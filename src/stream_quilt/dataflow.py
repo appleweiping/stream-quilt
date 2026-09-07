@@ -132,6 +132,12 @@ class FlowStep:
 
 @dataclass(frozen=True, slots=True)
 class FlowLimits:
+    """Per-FlowStep emission bounds and shared transaction callback/state bounds.
+
+    Record count/batch bytes apply to each FlowStep's emitted batch. A branching
+    graph additionally bounds merge, branch and edge work using GraphLimits.
+    """
+
     max_records_per_input: int = 1_000
     max_calls_per_input: int = 10_000
     max_record_bytes: int = 1 * 1024 * 1024
@@ -298,6 +304,143 @@ class FlowCheckpoint:
         )
 
 
+class _FlowTransaction:
+    """One staged state/callback budget shared by linear and graph schedulers."""
+
+    def __init__(
+        self, limits: FlowLimits, state: dict[tuple[str, str], str], state_bytes: int
+    ) -> None:
+        self.limits = limits
+        self.state = state
+        self.pending: dict[tuple[str, str], str | object] = {}
+        self.projected_keys = len(state)
+        self.projected_bytes = state_bytes
+        self.calls = 0
+
+    def invoke(self, function: Callable[..., Any], *args: Any) -> Any:
+        self.calls += 1
+        if self.calls > self.limits.max_calls_per_input:
+            raise ValidationError("callback invocation budget exceeded")
+        value = function(*args)
+        if inspect.isawaitable(value):
+            if inspect.iscoroutine(value):
+                value.close()
+            raise ValidationError("dataflow callbacks must not return awaitables")
+        return value
+
+    def apply(
+        self,
+        step: FlowStep,
+        current: Iterable[FlowRecord],
+        on_emit: Callable[[FlowRecord], None] | None = None,
+    ) -> tuple[FlowRecord, ...]:
+        limits = self.limits
+        output: list[FlowRecord] = []
+        batch_bytes = 0
+
+        def emit(value: Any, key: str | None) -> None:
+            nonlocal batch_bytes
+            if len(output) >= limits.max_records_per_input:
+                raise ValidationError("dataflow expansion exceeds per-input record limit")
+            item = FlowRecord(value, key)
+            if item.byte_size > limits.max_record_bytes:
+                raise ValidationError("dataflow output exceeds record byte limit")
+            batch_bytes += item.byte_size
+            if batch_bytes > limits.max_batch_bytes:
+                raise ValidationError("dataflow batch exceeds aggregate byte limit")
+            if on_emit is not None:
+                on_emit(item)
+            output.append(item)
+
+        try:
+            for item in current:
+                function = cast(Callable[..., Any], step.function)
+                if step.operator == "drop_key":
+                    emit(item.value, None)
+                    continue
+                if step.operator == "stateful_map":
+                    if item.key is None:
+                        raise ValidationError("stateful_map requires keyed records")
+                    state_key = (step.step_id, item.key)
+                    previous = self.pending.get(state_key, self.state.get(state_key, _REMOVED))
+                    state = (
+                        self.invoke(cast(Callable[[], Any], step.initial))
+                        if previous is _REMOVED
+                        else json.loads(str(previous))
+                    )
+                    state = json.loads(_snapshot(state, limits.max_state_value_bytes))
+                    update = self.invoke(function, item.value, state)
+                    if type(update) is not StateUpdate:
+                        raise ValidationError("stateful callback must return StateUpdate")
+                    update.__post_init__()
+                    replacement = (
+                        _snapshot(update.state, limits.max_state_value_bytes)
+                        if update.retain
+                        else _REMOVED
+                    )
+                    self.projected_keys += (replacement is not _REMOVED) - (
+                        previous is not _REMOVED
+                    )
+                    self.projected_bytes += (
+                        len(str(replacement).encode()) if replacement is not _REMOVED else 0
+                    ) - (len(str(previous).encode()) if previous is not _REMOVED else 0)
+                    if (
+                        self.projected_keys > limits.max_state_keys
+                        or self.projected_bytes > limits.max_state_bytes
+                    ):
+                        raise ValidationError("dataflow keyed state capacity exceeded")
+                    self.pending[state_key] = replacement
+                    if update.emit:
+                        emit(update.output, item.key)
+                    continue
+                result = self.invoke(function, item.value)
+                if step.operator == "map":
+                    emit(result, item.key)
+                elif step.operator == "key_by":
+                    emit(item.value, _key(result, "key_by result"))
+                elif step.operator == "filter":
+                    if type(result) is not bool:
+                        raise ValidationError("filter callback must return bool")
+                    if result:
+                        emit(item.value, item.key)
+                else:
+                    if not isinstance(result, Iterable) or isinstance(
+                        result, (str, bytes, Mapping)
+                    ):
+                        raise ValidationError("flat_map must return an iterable of JSON values")
+                    iterator = iter(result)
+                    primary: BaseException | None = None
+                    try:
+                        for value in iterator:
+                            emit(value, item.key)
+                    except BaseException as error:
+                        primary = error
+                        raise
+                    finally:
+                        if inspect.isgenerator(iterator):
+                            try:
+                                iterator.close()
+                            except Exception:
+                                # A generator's ordinary cleanup failure must
+                                # not replace a consumer control exception.
+                                if primary is None:
+                                    raise
+        except Exception:
+            raise FlowExecutionError(step.step_id) from None
+        return tuple(output)
+
+    def commit(self) -> tuple[dict[tuple[str, str], str], int]:
+        # Stage allocations before publication. Values are immutable JSON text,
+        # so this copies the index, not all retained value payloads.
+        state = self.state.copy()
+        for key, value in self.pending.items():
+            if value is _REMOVED:
+                state.pop(key, None)
+            else:
+                state[key] = str(value)
+        return state, self.projected_bytes
+
+
 class FlowRuntime:
     """Single-owner pull runtime. Each process() call commits its state atomically.
 
@@ -367,115 +510,17 @@ class FlowRuntime:
             self._busy = False
 
     def _process(self, record: FlowRecord) -> tuple[FlowRecord, ...]:
-        limits = self.flow.limits
-        pending: dict[tuple[str, str], str | object] = {}
-        projected_keys, projected_bytes = len(self._state), self._state_bytes
-        calls = 0
-
-        def invoke(function: Callable[..., Any], *args: Any) -> Any:
-            nonlocal calls
-            calls += 1
-            if calls > limits.max_calls_per_input:
-                raise ValidationError("callback invocation budget exceeded")
-            value = function(*args)
-            if inspect.isawaitable(value):
-                if inspect.iscoroutine(value):
-                    value.close()
-                raise ValidationError("dataflow callbacks must not return awaitables")
-            return value
-
+        transaction = _FlowTransaction(self.flow.limits, self._state, self._state_bytes)
         current: tuple[FlowRecord, ...] = (record,)
         for step in self.flow.steps:
-            output: list[FlowRecord] = []
-            batch_bytes = 0
-
-            def emit(value: Any, key: str | None, batch: list[FlowRecord] = output) -> None:
-                nonlocal batch_bytes
-                if len(batch) >= limits.max_records_per_input:
-                    raise ValidationError("dataflow expansion exceeds per-input record limit")
-                item = FlowRecord(value, key)
-                if item.byte_size > limits.max_record_bytes:
-                    raise ValidationError("dataflow output exceeds record byte limit")
-                batch_bytes += item.byte_size
-                if batch_bytes > limits.max_batch_bytes:
-                    raise ValidationError("dataflow batch exceeds aggregate byte limit")
-                batch.append(item)
-
-            try:
-                for item in current:
-                    # FlowStep validation guarantees callbacks for these operators.
-                    function = cast(Callable[..., Any], step.function)
-                    if step.operator == "drop_key":
-                        emit(item.value, None)
-                        continue
-                    if step.operator == "stateful_map":
-                        if item.key is None:
-                            raise ValidationError("stateful_map requires keyed records")
-                        state_key = (step.step_id, item.key)
-                        previous = pending.get(state_key, self._state.get(state_key, _REMOVED))
-                        state = (
-                            invoke(cast(Callable[[], Any], step.initial))
-                            if previous is _REMOVED
-                            else json.loads(str(previous))
-                        )
-                        # Initializer containers are isolated just like retained state.
-                        state = json.loads(_snapshot(state, limits.max_state_value_bytes))
-                        update = invoke(function, item.value, state)
-                        if type(update) is not StateUpdate:
-                            raise ValidationError("stateful callback must return StateUpdate")
-                        update.__post_init__()
-                        replacement = (
-                            _snapshot(update.state, limits.max_state_value_bytes)
-                            if update.retain
-                            else _REMOVED
-                        )
-                        projected_keys += (replacement is not _REMOVED) - (previous is not _REMOVED)
-                        projected_bytes += (
-                            len(str(replacement).encode()) if replacement is not _REMOVED else 0
-                        ) - (len(str(previous).encode()) if previous is not _REMOVED else 0)
-                        if (
-                            projected_keys > limits.max_state_keys
-                            or projected_bytes > limits.max_state_bytes
-                        ):
-                            raise ValidationError("dataflow keyed state capacity exceeded")
-                        pending[state_key] = replacement
-                        if update.emit:
-                            emit(update.output, item.key)
-                        continue
-                    result = invoke(function, item.value)
-                    if step.operator == "map":
-                        emit(result, item.key)
-                    elif step.operator == "key_by":
-                        emit(item.value, _key(result, "key_by result"))
-                    elif step.operator == "filter":
-                        if type(result) is not bool:
-                            raise ValidationError("filter callback must return bool")
-                        if result:
-                            emit(item.value, item.key)
-                    else:
-                        if not isinstance(result, Iterable) or isinstance(
-                            result, (str, bytes, Mapping)
-                        ):
-                            raise ValidationError("flat_map must return an iterable of JSON values")
-                        iterator = iter(result)
-                        try:
-                            for value in iterator:
-                                emit(value, item.key)
-                        finally:
-                            if inspect.isgenerator(iterator):
-                                iterator.close()
-            except Exception:
-                raise FlowExecutionError(step.step_id) from None
-            current = tuple(output)
-        _count(self.emitted_records + len(current), "emitted_records", 0, _MAX_COUNT)
-        for key, value in pending.items():
-            if value is _REMOVED:
-                self._state.pop(key, None)
-            else:
-                self._state[key] = str(value)
-        self._state_bytes = projected_bytes
-        self.processed_inputs += 1
-        self.emitted_records += len(current)
+            current = transaction.apply(step, current)
+        processed_inputs = self.processed_inputs + 1
+        emitted_records = _count(
+            self.emitted_records + len(current), "emitted_records", 0, _MAX_COUNT
+        )
+        self._state, self._state_bytes = transaction.commit()
+        self.processed_inputs = processed_inputs
+        self.emitted_records = emitted_records
         return current
 
     def run(

@@ -7,12 +7,12 @@ code-extension files total 841,358 bytes, including tests/tooling. This is a
 tree inventory, not production LOC or evidence of equivalent functionality.
 
 The original implementation adds actual local transaction recovery and a local
-linear operator runtime. It does not implement a distributed dataflow engine.
+linear and bounded DAG operator runtimes. It does not implement a distributed dataflow engine.
 
 | Reference surface | Current evidence | Remaining work |
 |---|---|---|
-| `dataflow.py`, typed stream/operator graph | Validated bounded linear graph over isolated JSON records; explicit semantic revision | Branching topology, edge typing, graph inspection and multi-worker lifecycle |
-| `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, bounded expansion and pull-based source consumption | General batches, branch/merge and full cross-operator reference conformance |
+| `dataflow.py`, typed stream/operator graph | Validated bounded linear and acyclic branching graphs over isolated JSON records; explicit semantic revision and topology inspection | Typed edges, multi-source graphs and multi-worker lifecycle |
+| `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, fanout, strict boolean branching and edge-ordered merge; bounded expansion and pull-based source consumption | General batches and full cross-operator reference conformance |
 | `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map, explicit deletion/emission, per-input rollback and strict portable snapshots | Stateful flat-map/batch, notifications, EOF handling and partition ownership |
 | Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams` | Incremental keyed joins, final aggregation and collection contracts; cache expiration and enrichment error handling |
 | `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation | General window logic/aggregation, processing-time clocks, idle notification, mergeable state and window metadata streams |
@@ -99,3 +99,36 @@ state. Independent checks matched a 55-record keyed-sum oracle over eight
 restarts, a real two-thread CAS race and process death after both output and
 head SQL writes. No remote matrix result or throughput equivalence is implied
 by these local checks.
+
+## Bounded branching graph increment
+
+`GraphRuntime` executes a single-entry local DAG through the same internal
+operator transaction engine as linear `FlowRuntime`. It adds explicit fanout,
+one-evaluation boolean routing and edge-ordered union. Isolated per-node/per-key
+state and shared downstream state proposals commit together with all terminal
+outputs after every sibling succeeds. Whole-graph work-record/byte accounting
+charges each edge delivery, preventing fanout from multiplying an unbounded
+per-branch allowance. Versioned graph snapshots bind the topology, declaration
+orders, routes, limits and explicit semantic revision.
+
+Tests use independently specified diamonds, branch grouping, sibling state and
+downstream sum oracles; a 60-input oracle spans repeated JSON snapshot restores.
+They also check late-sibling failure, exact aggregate limits, callback reentrancy,
+coroutine rejection, closed infinite generators, incompatible topology and
+unchanged linear checkpoint bytes. See [branching contracts](branching-dataflows.md)
+and `examples/branching_totals.py`.
+
+Graph checkpoints are currently in-memory/portable state only. `FlowJournal`
+rejects graph configurations before filesystem changes; journal integration,
+multi-source inputs, typed edges, incremental joins/windows, notifications and
+distributed delivery remain open. Local once-per-edge evaluation is not an
+exactly-once external effect or distributed recovery claim.
+
+Verification for this increment: all 727 repository tests passed on Windows
+Python 3.12.13 and WSL Ubuntu Python 3.12.3. Windows combined statement/branch
+coverage was 96.58%, with 100% for `branching.py` and 97.89% for the shared
+`dataflow.py` engine. The 79 graph cases include review-driven state-index
+allocation failure and generator cleanup/control-exception regressions, tested
+against both schedulers. Linux ran the full suite without collecting coverage.
+These are local correctness results, not remote CI or throughput-equivalence
+evidence.

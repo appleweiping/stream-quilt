@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bounded acyclic operator graphs add fanout, strict conditional routing and
+  deterministic edge-ordered merges. Graph execution shares the linear operator
+  transaction engine, with whole-graph work/state budgets and atomic per-input
+  sibling publication. Separate portable graph checkpoints bind topology and
+  revision; durable graph journal integration remains explicitly open.
 - Local composable operators execute map/filter/flat-map/keying callbacks and
   isolated keyed state, with per-input rollback, bounded expansion and pull
   backpressure. Portable state checkpoints bind explicit semantic revisions;
