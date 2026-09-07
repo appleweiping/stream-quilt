@@ -4,6 +4,18 @@ This project follows semantic versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-07
+
+### Added
+
+- `join_streams()` and `stream-quilt join` for deterministic cross-stream event
+  pairing after offline alignment. Pairs use normalized start-time deltas,
+  retain shared-window provenance, and deduplicate events repeated by
+  overlapping windows.
+- A hard `MAX_JOIN_COMPARISONS` budget and inclusive `max_delta_ms` tolerance;
+  an omitted tolerance is explicit unbounded matching within the comparison
+  ceiling.
+
 ## [0.3.0] - 2026-09-07
 
 ### Added

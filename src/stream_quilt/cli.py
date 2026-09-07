@@ -14,6 +14,7 @@ from stream_quilt.cloudevents import load_cloudevents
 from stream_quilt.demo import demo_config_payload, demo_event_payloads
 from stream_quilt.errors import OutputError, StreamQuiltError
 from stream_quilt.io import config_from_dict, event_from_dict, load_config, load_events
+from stream_quilt.joins import join_streams
 from stream_quilt.models import AlignedWindow, AlignmentConfig, AlignmentResult, Event
 from stream_quilt.report import write_report_bundle
 
@@ -36,6 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     replay = commands.add_parser("replay", help="replay JSONL in arrival order through watermarks")
     _add_run_arguments(replay)
+
+    join = commands.add_parser(
+        "join", help="pair events from two streams after deterministic offline alignment"
+    )
+    join.add_argument("config", type=Path)
+    join.add_argument("events", type=Path)
+    join.add_argument("left_stream")
+    join.add_argument("right_stream")
+    join.add_argument("--max-delta-ms", type=float, default=None)
+    join.add_argument("--output", type=Path, default=Path("join.json"))
+    join.add_argument("--input-format", choices=("native", "cloudevents"), default="native")
 
     demo = commands.add_parser("demo", help="run a built-in three-stream example")
     demo.add_argument("--output", type=Path, default=Path("demo-output"))
@@ -72,6 +84,31 @@ def main(argv: list[str] | None = None) -> int:
             )
             paths = write_report_bundle(result, config, args.output)
             _print_summary(result, paths)
+            return 0
+        if args.command == "join":
+            config = load_config(args.config)
+            events = _load_events(args.events, args.input_format)
+            result = align_events(events, config)
+            joined = join_streams(
+                result,
+                args.left_stream,
+                args.right_stream,
+                max_delta_ms=args.max_delta_ms,
+            )
+            try:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(
+                    json.dumps(joined.to_dict(), indent=2, allow_nan=False) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+            except OSError as exc:
+                raise OutputError(f"cannot write join output to {args.output}: {exc}") from exc
+            print(
+                f"joined {len(joined.pairs)} pairs from {args.left_stream} "
+                f"and {args.right_stream}"
+            )
+            print(f"  {'result':<20} {args.output}")
             return 0
         if args.command == "benchmark":
             benchmark = benchmark_alignment(

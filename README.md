@@ -55,6 +55,8 @@ The checked-in image below is a screenshot of the actual generated
 - Standard-library runtime with no network, model, or media dependency.
 - CloudEvents 1.0 structured JSONL ingestion with explicit alignment extensions.
 - Reproducible offline-versus-watermark benchmark JSON with semantic output digests.
+- Deterministic cross-stream joins over normalized event starts, with inclusive
+  tolerances, overlapping-window provenance, and a bounded comparison budget.
 
 ## Installation
 
@@ -98,6 +100,19 @@ stream-quilt align examples/cloudevents-config.json examples/cloudevents.jsonl \
   --input-format cloudevents --output aligned
 stream-quilt benchmark --events 3000 --streams 3 --repeats 7 --output benchmark.json
 ```
+
+Pair camera and microphone events after alignment:
+
+```bash
+stream-quilt join examples/demo-output/config.json examples/demo-output/events.jsonl \
+  camera microphone --max-delta-ms 40 --output joined.json
+```
+
+`join_streams()` deduplicates events that appear in multiple overlapping
+windows, matches normalized start timestamps within the inclusive tolerance,
+and records the shared window indexes for every pair. An omitted tolerance
+returns all cross-stream pairs. The comparison budget is explicit, so a large
+cartesian join fails closed instead of consuming unbounded memory or CPU.
 
 See [CloudEvents integration and benchmark protocol](docs/cloudevents-and-benchmarks.md) for the exact
 mapping, semantic comparison, reporting rules, and limits of the current evidence.
