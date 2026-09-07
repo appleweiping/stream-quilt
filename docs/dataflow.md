@@ -88,6 +88,12 @@ key/step metadata. Current/next output batches, original/proposed state and
 temporary JSON snapshots may coexist. Their count/individual-byte bounds remain
 separate; a `max_state_bytes` value is not a cap on total process RSS.
 
+Publication stages a shallow copy of the retained state index before swapping it
+into the runtime. This costs O(retained keys + touched keys) per source input;
+immutable encoded values are shared, not deep-copied. A failure while allocating
+or updating that index leaves the previous index and counters unchanged. This
+does not make the in-memory runtime resilient to process death or OS shutdown.
+
 ## Checkpoints and semantic revision
 
 `runtime.checkpoint()` returns an immutable `FlowCheckpoint`; `to_dict()` and
@@ -106,5 +112,7 @@ The optional [FlowJournal](flow-journal.md) commits generalized flow state,
 source record offsets and local outputs in one SQLite transaction. `FlowRuntime`
 itself remains in-memory. The existing `RecoveryStore` and `resume` CLI remain
 specific to `WatermarkAligner`; they do not implicitly commit this flow's state
-or outputs. Branch/merge graphs, notifications, general window operators,
-partitioned connectors and distributed execution remain open whole-reference work.
+or outputs. The separate [GraphDataflow API](branching-dataflows.md) adds bounded
+branch/merge topology with one internal transaction across siblings; its new
+checkpoint kind is not yet supported by FlowJournal. Notifications, general
+window operators, partitioned connectors and distributed execution remain open.

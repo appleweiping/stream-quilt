@@ -2,6 +2,16 @@
 
 from stream_quilt.aligner import WatermarkAligner, align_events
 from stream_quilt.benchmark import AlignmentBenchmark, ModeBenchmark, benchmark_alignment
+from stream_quilt.branching import (
+    FlowBranch,
+    FlowEdge,
+    FlowMerge,
+    GraphCheckpoint,
+    GraphDataflow,
+    GraphLimits,
+    GraphOutput,
+    GraphRuntime,
+)
 from stream_quilt.checkpoint import AlignerCheckpoint, TrackedCheckpoint, config_digest
 from stream_quilt.clock import DriftEstimate, OffsetEstimate, estimate_drift, estimate_offset
 from stream_quilt.cloudevents import cloudevent_from_dict, load_cloudevents
@@ -42,16 +52,24 @@ __all__ = [
     "Dataflow",
     "DriftEstimate",
     "Event",
+    "FlowBranch",
     "FlowCheckpoint",
+    "FlowEdge",
     "FlowExecutionError",
     "FlowJournal",
     "FlowLimits",
+    "FlowMerge",
     "FlowOutput",
     "FlowRecord",
     "FlowRecoveryPoint",
     "FlowRuntime",
     "FlowStep",
     "Gap",
+    "GraphCheckpoint",
+    "GraphDataflow",
+    "GraphLimits",
+    "GraphOutput",
+    "GraphRuntime",
     "JoinedPair",
     "LateEventError",
     "ModeBenchmark",

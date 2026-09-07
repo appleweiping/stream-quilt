@@ -5,8 +5,11 @@ in SQLite. See [recovery and restart](docs/recovery.md) for the `resume` CLI and
 The [local dataflow API](docs/dataflow.md) also runs composable map/filter/flat-map
 operators and isolated keyed state with atomic per-input rollback and portable
 checkpoints. Its generalized flow checkpoints are separate from aligner recovery.
-Use [FlowJournal](docs/flow-journal.md) to atomically persist a general flow's
+Use [FlowJournal](docs/flow-journal.md) to atomically persist a linear flow's
 source position, keyed state and local output records across process restarts.
+The separate [branching dataflow API](docs/branching-dataflows.md) runs bounded
+DAGs with conditional routes, edge-ordered merges and atomic state/output
+publication across siblings. Its graph checkpoints are not yet journal-backed.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 
@@ -69,6 +72,8 @@ The checked-in image below is a screenshot of the actual generated
   bounded expansion, exact keys and reusable per-step/per-key state.
 - Copy-on-write state transactions, pull-based source consumption and strictly
   validated portable state snapshots with explicit semantic revisions.
+- Bounded local DAG fanout, strict conditional branching and deterministic merge,
+  with whole-graph work limits and one internal transaction across all siblings.
 
 ## Installation
 
