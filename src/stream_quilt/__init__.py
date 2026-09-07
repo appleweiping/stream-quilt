@@ -5,6 +5,16 @@ from stream_quilt.benchmark import AlignmentBenchmark, ModeBenchmark, benchmark_
 from stream_quilt.checkpoint import AlignerCheckpoint, TrackedCheckpoint, config_digest
 from stream_quilt.clock import DriftEstimate, OffsetEstimate, estimate_drift, estimate_offset
 from stream_quilt.cloudevents import cloudevent_from_dict, load_cloudevents
+from stream_quilt.dataflow import (
+    Dataflow,
+    FlowCheckpoint,
+    FlowExecutionError,
+    FlowLimits,
+    FlowRecord,
+    FlowRuntime,
+    FlowStep,
+    StateUpdate,
+)
 from stream_quilt.errors import LateEventError, OutputError, StreamQuiltError, ValidationError
 from stream_quilt.io import config_from_dict, event_from_dict, load_config, load_events
 from stream_quilt.joins import JoinedPair, StreamJoin, join_streams
@@ -28,8 +38,15 @@ __all__ = [
     "AlignmentConfig",
     "AlignmentResult",
     "ClockDrift",
+    "Dataflow",
     "DriftEstimate",
     "Event",
+    "FlowCheckpoint",
+    "FlowExecutionError",
+    "FlowLimits",
+    "FlowRecord",
+    "FlowRuntime",
+    "FlowStep",
     "Gap",
     "JoinedPair",
     "LateEventError",
@@ -43,6 +60,7 @@ __all__ = [
     "RetentionPolicy",
     "SessionResult",
     "SessionWindow",
+    "StateUpdate",
     "StreamJoin",
     "StreamQuiltError",
     "TrackedCheckpoint",
