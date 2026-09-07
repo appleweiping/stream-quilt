@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Strict portable aligner checkpoints retain the retention policy and reject
+  malformed state, nonfinite numeric encodings and inconsistent identity records.
+- Atomic SQLite source-offset/state/window commits, generation conflicts,
+  bounded snapshot readers and the `resume` CLI support real process restarts.
+- Added separate-process crash/restart, transaction rollback, concurrent writer,
+  corruption and SQL pre-materialization resource tests. Whole-reference
+  dataflow/runtime gaps remain explicitly open in `docs/parity-dataflow.md`.
+
 This project follows semantic versioning.
 
 ## [Unreleased]
