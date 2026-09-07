@@ -171,6 +171,27 @@ at least `window_ms`; a shorter horizon is refused rather than allowed to releas
 still-open window could include. `max_tracked_events` caps the retained records and raises when it is
 reached, because bounded memory cannot hold an unbounded list of reported IDs.
 
+### Sessions, partitions, and recovery
+
+Sparse streams can be grouped into stream-local sessions, while a running aligner
+can be partitioned and checkpointed for worker recovery:
+
+```python
+from stream_quilt import WatermarkAligner, partition_events, sessionize
+
+sessions = sessionize(events, gap_ms=250)
+partitions = partition_events(events, partition_count=4)
+aligner = WatermarkAligner(config)
+for event in events:
+    aligner.ingest(event)
+snapshot = aligner.checkpoint()
+restored = WatermarkAligner.from_checkpoint(config, snapshot)
+```
+
+Session gaps are measured from the previous event's exclusive end. Partition IDs use
+SHA-256 rather than Python's process-randomized `hash()`. Checkpoint restore verifies
+the complete configuration digest and fails closed on a mismatch.
+
 ## Clock offsets and drift
 
 Offsets are added to observed event timestamps. Estimate a constant offset from matched anchors:

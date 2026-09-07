@@ -4,6 +4,16 @@ This project follows semantic versioning.
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.5.0] - 2026-09-07
+
+### Added
+
+- Added deterministic stream-local event-time session windows with explicit gap semantics.
+- Added portable aligner checkpoints with configuration digests and fail-closed recovery.
+- Added deterministic SHA-256 event partitioning for parallel worker topologies.
+
 ## [0.4.0] - 2026-09-07
 
 ### Added

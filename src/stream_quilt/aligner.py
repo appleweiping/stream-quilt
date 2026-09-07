@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from itertools import pairwise
 from typing import NamedTuple
 
+from stream_quilt.checkpoint import AlignerCheckpoint, TrackedCheckpoint, config_digest
 from stream_quilt.errors import LateEventError, ValidationError
 from stream_quilt.interval_index import WindowIntervalIndex, event_horizon, overlaps
 from stream_quilt.limits import MAX_EVENTS
@@ -114,6 +115,62 @@ class WatermarkAligner:
         """Event identities released by the retention policy."""
 
         return self._released
+
+    def checkpoint(self) -> AlignerCheckpoint:
+        """Return a portable snapshot that can be restored after process failure."""
+
+        live_events = tuple(entry.event for entry in self._index._live.values())
+        return AlignerCheckpoint(
+            config_digest=config_digest(self.config),
+            next_index=self._next_index,
+            next_start=self._next_start,
+            max_seen=dict(self._max_seen),
+            live_events=live_events,
+            seen_order=tuple(
+                TrackedCheckpoint(item.event_id, item.horizon_ms, item.status)
+                for item in self._seen_order
+            ),
+            assigned_event_ids=tuple(sorted(self._assigned_ids)),
+            dropped_event_ids=tuple(self._dropped),
+            accepted_late_event_ids=tuple(self._accepted_late),
+            unassigned_event_ids=tuple(self._unassigned),
+            released_count=self._released,
+            released_reported_count=self._released_reported,
+            closed=self._closed,
+        )
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        config: AlignmentConfig,
+        checkpoint: AlignerCheckpoint,
+        *,
+        retention: RetentionPolicy | None = None,
+    ) -> WatermarkAligner:
+        """Restore a checkpoint after verifying its configuration identity."""
+
+        if not isinstance(checkpoint, AlignerCheckpoint):
+            raise ValidationError("checkpoint must be an AlignerCheckpoint")
+        restored = cls(config, retention=retention)
+        if checkpoint.config_digest != config_digest(restored.config):
+            raise ValidationError("checkpoint was created with a different alignment configuration")
+        for event in checkpoint.live_events:
+            restored._index._insert_validated(event)
+        restored._next_index = checkpoint.next_index
+        restored._next_start = checkpoint.next_start
+        restored._max_seen = dict(checkpoint.max_seen)
+        restored._seen_order = deque(
+            _Tracked(item.event_id, item.horizon_ms, item.status) for item in checkpoint.seen_order
+        )
+        restored._seen_ids = {item.event_id for item in checkpoint.seen_order}
+        restored._assigned_ids = set(checkpoint.assigned_event_ids)
+        restored._dropped = list(checkpoint.dropped_event_ids)
+        restored._accepted_late = list(checkpoint.accepted_late_event_ids)
+        restored._unassigned = list(checkpoint.unassigned_event_ids)
+        restored._released = checkpoint.released_count
+        restored._released_reported = checkpoint.released_reported_count
+        restored._closed = checkpoint.closed
+        return restored
 
     def ingest(self, event: Event) -> tuple[AlignedWindow, ...]:
         """Ingest one event in arrival order and return newly closed windows."""

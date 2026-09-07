@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, cite the versioned release you evaluated."
 title: "Stream Quilt"
 type: software
-version: 0.4.0
+version: 0.5.0
 date-released: 2026-09-07
 authors:
   - family-names: "appleweiping"
