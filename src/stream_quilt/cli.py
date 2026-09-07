@@ -105,8 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             except OSError as exc:
                 raise OutputError(f"cannot write join output to {args.output}: {exc}") from exc
             print(
-                f"joined {len(joined.pairs)} pairs from {args.left_stream} "
-                f"and {args.right_stream}"
+                f"joined {len(joined.pairs)} pairs from {args.left_stream} and {args.right_stream}"
             )
             print(f"  {'result':<20} {args.output}")
             return 0
