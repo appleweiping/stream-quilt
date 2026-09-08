@@ -165,11 +165,12 @@ trusted application storage. A checkpoint does not include source position or
 durably acknowledged outputs.
 
 Existing `Dataflow`, `FlowRuntime` and their linear checkpoint identity/JSON
-remain unchanged. `FlowJournal` currently accepts **linear Dataflow only**, and
-rejects `GraphDataflow` before opening/creating a store. Graph checkpoints have
-a different kind and cannot silently restore into a linear runtime. Durable DAG
-source/state/output publication requires a separately designed journal extension;
-it is not claimed by this implementation.
+remain unchanged. `FlowJournal` accepts **linear Dataflow only**, and rejects
+`GraphDataflow` before opening/creating a store. Graph checkpoints have a different
+kind and cannot silently restore into a linear runtime. [GraphJournal](graph-journal.md)
+now supplies separately identified durable DAG source/state/terminal-output
+transactions using the shared SQLite journal engine. It never retries callbacks
+and does not wrap external side effects in a transaction.
 
 ## Verification and remaining scope
 
@@ -180,7 +181,7 @@ infinite expansion cleanup, shared state/call limits, no-extra-pull behavior,
 callback rejection, counter exhaustion and malformed topology/checkpoints.
 All existing linear and journal tests also run against the extracted engine.
 
-Graph journal integration, typed edge schemas, incremental joins/windows,
+Typed edge schemas, incremental joins/windows,
 notifications, distributed workers/epochs, connectors and throughput/memory
 evidence remain open. This is not whole-repository Bytewax parity; see the
 [remaining repository contracts](parity-dataflow.md).

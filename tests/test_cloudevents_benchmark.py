@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-import time
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -446,10 +447,43 @@ def test_cli_aligns_cloudevents(tmp_path):
 
 
 def test_generated_workload_runtime_guard():
-    started = time.perf_counter()
-    result = benchmark_alignment(event_count=600, repeats=1, warmups=0)
-    assert time.perf_counter() - started < 5.0
-    assert result.equivalent_outputs is True
+    # Measure production work, not coverage/profiler overhead. -I -S prevents
+    # site hooks and environment-driven subprocess tracing; only this exact src
+    # directory is added. The workload and strict five-second cutoff are unchanged.
+    script = """
+import json, sys, time
+sys.path.insert(0, sys.argv[1])
+from stream_quilt.benchmark import benchmark_alignment
+assert sys.gettrace() is None and sys.getprofile() is None
+started = time.perf_counter()
+result = benchmark_alignment(event_count=600, repeats=1, warmups=0)
+elapsed = time.perf_counter() - started
+print(json.dumps({"elapsed": elapsed, "equivalent": result.equivalent_outputs,
+    "modes": [{"name": mode.mode, "digest": mode.output_sha256, "windows": mode.windows}
+              for mode in result.modes]}))
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(Path(__file__).resolve().parents[1] / "src"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["elapsed"] < 5.0
+    assert report["equivalent"] is True
+    assert [mode["name"] for mode in report["modes"]] == ["offline-sort", "watermark-replay"]
+    assert [mode["windows"] for mode in report["modes"]] == [20, 20]
+    assert {mode["digest"] for mode in report["modes"]} == {
+        "933b1f3d572ae2748af4abd83af3d274f81674e34507da58d6b8e91f06bf749f"
+    }
 
 
 def test_checked_in_cloudevents_example_is_directly_runnable(tmp_path):

@@ -9,7 +9,10 @@ Use [FlowJournal](docs/flow-journal.md) to atomically persist a linear flow's
 source position, keyed state and local output records across process restarts.
 The separate [branching dataflow API](docs/branching-dataflows.md) runs bounded
 DAGs with conditional routes, edge-ordered merges and atomic state/output
-publication across siblings. Its graph checkpoints are not yet journal-backed.
+publication across siblings. [GraphJournal](docs/graph-journal.md) persists the
+graph's source position, all keyed state and terminal output provenance in one
+SQLite CAS transaction. Run `python examples/durable_branching_totals.py` for
+offline restart/replay; no automatic retry or external exactly-once claim.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 

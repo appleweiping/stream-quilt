@@ -37,8 +37,13 @@ After it finishes, `BEGIN IMMEDIATE` reloads the head and compares it with the
 earlier snapshot before any result is inserted. A stale generation raises
 `RecoveryConflict`; there is no automatic callback retry. Publication, including
 all output rows and the replacement head, uses `synchronous=FULL` in one
-transaction. A callback, source, serialization, capacity or SQL failure leaves
+transaction. A callback, source, serialization, capacity or pre-commit SQL failure leaves
 the previous durable prefix unchanged. The in-memory proposal is discarded.
+
+COMMIT acknowledgment or post-operation cleanup failures are different: a commit
+may already exist. Diagnostics instruct callers to inspect `latest()` before
+replaying, never to assume rollback or automatically retry. Rollback and close
+are both attempted; ordinary cleanup errors preserve active control exceptions.
 
 Callbacks remain trusted Python code. Their external effects are not rolled
 back, and a conflicting transaction may already have executed them. The source
@@ -60,7 +65,9 @@ missing databases; later reads do not silently recreate a deleted file.
 limits and consecutive output index/count metadata. It does not scan every
 output's content on each head read. `outputs(start=0, limit=1000)` verifies each
 requested row's checksum, JSON fields, record contract and source ordering
-within the page before yielding it. Corruption later in a page can raise after
+within the page before yielding it. For `start > 0`, one bounded predecessor is
+also validated, preventing a reversed source order from hiding exactly across
+a page boundary. It is not yielded. Corruption later in a page can raise after
 earlier valid records were yielded; this is a row-wise API, not an all-or-nothing
 page result. Collect a page before publishing it if that distinction matters.
 
@@ -85,7 +92,8 @@ records per batch, one million output records in a journal, 64 MiB of encoded
 new output rows per batch and 64 MiB per encoded head/document. The flow's
 smaller record/state limits still apply. A flow checkpoint that exceeds the
 journal's document cap cannot be committed even when valid for in-memory use.
-Output pages contain at most 10,000 records. Start a separately identified
+Output pages yield at most 10,000 records and inspect at most one additional
+predecessor. Start a separately identified
 bounded run when a journal reaches capacity; retention/compaction is not yet
 implemented.
 
@@ -102,3 +110,6 @@ The older `RecoveryStore` remains a distinct, aligner-specific format. Neither
 format silently opens or migrates the other. There is no automatic schema
 migration, broker connector, retention service, retry scheduler or distributed
 worker ownership protocol in this increment.
+
+General branching DAGs use the separate [GraphJournal](graph-journal.md) format,
+sharing this private transaction engine while preserving linear wire compatibility.
