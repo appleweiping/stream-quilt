@@ -59,6 +59,18 @@ from stream_quilt.multi_graph import (
     MultiGraphLimits,
     MultiGraphRuntime,
 )
+from stream_quilt.multi_journal import (
+    GraphDrain,
+    GraphEOF,
+    MultiGraphJournal,
+    MultiGraphJournalOutput,
+    MultiGraphOperation,
+    MultiGraphOutputCursor,
+    MultiGraphOutputPage,
+    MultiGraphReceipt,
+    MultiGraphRecoveryPoint,
+    MultiGraphRequest,
+)
 from stream_quilt.partition import PartitionedEvents, partition_events
 from stream_quilt.recovery import RecoveryConflict, RecoveryPoint, RecoveryStore, resume_events
 from stream_quilt.sessions import SessionResult, SessionWindow, sessionize
@@ -90,6 +102,8 @@ __all__ = [
     "Gap",
     "GraphCheckpoint",
     "GraphDataflow",
+    "GraphDrain",
+    "GraphEOF",
     "GraphInput",
     "GraphJournal",
     "GraphJournalOutput",
@@ -110,7 +124,15 @@ __all__ = [
     "MultiGraphBatch",
     "MultiGraphCheckpoint",
     "MultiGraphDataflow",
+    "MultiGraphJournal",
+    "MultiGraphJournalOutput",
     "MultiGraphLimits",
+    "MultiGraphOperation",
+    "MultiGraphOutputCursor",
+    "MultiGraphOutputPage",
+    "MultiGraphReceipt",
+    "MultiGraphRecoveryPoint",
+    "MultiGraphRequest",
     "MultiGraphRuntime",
     "OffsetEstimate",
     "OutputError",

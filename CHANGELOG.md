@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `MultiGraphJournal` adds atomic multi-source process/EOF/drain recovery in a
+  distinct bounded SQLite format, reusing the existing graph runtime. Complete
+  immutable requests and retained receipts support idempotent publication and
+  unknown-commit recovery; fixed-prefix detached pages retain operation provenance.
+  Local transactions do not make callbacks or external broker/sink effects
+  exactly-once, and existing v1 journal formats remain unchanged.
 - `StateFlatUpdate` and `stateful_flat_map` add atomic keyed zero-to-many output
   to the shared linear/graph execution engine, portable checkpoints and both
   local journals. State is snapshotted before output iteration; bounded native

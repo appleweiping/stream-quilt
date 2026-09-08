@@ -193,10 +193,11 @@ hidden history. Checkpoint callers remain responsible for trustworthy storage.
 
 `GraphJournal` remains the single-entry v1 journal. Its scalar source-position
 and generation rules do not describe EOF/drain output without a new source
-record. It does not accept this runtime or checkpoint. A future multi-source
-journal needs a versioned operation log, vector positions, command/output cause
-and atomic CAS publication of the complete state. Neither this API nor such a
-local journal alone provides broker acknowledgement, external sink atomicity,
+record. It does not accept this runtime or checkpoint. The separate
+[MultiGraphJournal](multi-source-journal.md) supplies a versioned operation log,
+vector positions, persistent request receipts and atomic CAS publication of
+complete state and outputs. Neither this API nor that local journal provides
+broker acknowledgement, external sink atomicity,
 distributed epochs, partition migration, event-time join windows or watermarks.
 
 ## Verification evidence
