@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -513,116 +513,21 @@ class JoinRuntime:
 
     def process(self, side: str, record: FlowRecord) -> JoinBatch:
         with self._operation():
-            if type(side) is not str or side not in self.join.sides:
-                raise ValidationError("unknown join input side")
-            index = self.join.sides.index(side)
-            before = self._state
-            if before.phase != "open" or before.closed[index]:
-                raise ValidationError("join side has already reached EOF")
-            if type(record) is not FlowRecord or record.key is None:
-                raise ValidationError("join inputs must be keyed FlowRecord values")
-            key = _key(record.key, "join input key")
-            limits = self.join.limits
-            encoded = _snapshot(record.value, limits.max_value_bytes)
-            counts = list(before.counts)
-            counts[index] += 1
-            _count(sum(counts), "total processed inputs", 0, _MAX_COUNT)
-            previous = before.cells.get(key)
-            sides = list(previous.values if previous else ((),) * len(self.join.sides))
-            if self.join.insert_mode == "product":
-                if len(sides[index]) == limits.max_values_per_side:
-                    raise ValidationError("join side exceeds its retained value-count limit")
-                sides[index] = (*sides[index], encoded)
-            elif self.join.insert_mode == "last" or not sides[index]:
-                sides[index] = (encoded,)
-            proposed = _cell(key, tuple(sides), limits)
-            complete = self.join.emit_mode == "complete" and all(sides)
-            emit = complete or self.join.emit_mode == "running"
-            emitted = before.emitted + (proposed.rows if emit else 0)
-            _count(emitted, "emitted join rows", 0, _MAX_COUNT)
-            size = before.byte_size - (previous.byte_size if previous else 0)
-            values = before.values - (previous.count if previous else 0)
-            if not complete:
-                size += proposed.byte_size
-                values += proposed.count
-            keys = len(before.cells) + (0 if previous else 1) - int(complete)
-            if (
-                keys > limits.max_keys
-                or size > limits.max_state_bytes
-                or values > limits.max_values
-            ):
-                raise ValidationError("join retained state exceeds its aggregate limits")
-            rows = tuple(_rows(key, proposed, self.join.sides)) if emit else ()
-            cells = dict(before.cells)
-            if complete:
-                cells.pop(key, None)
-            else:
-                cells[key] = proposed
-            batch = JoinBatch(rows, "open", len(cells))
-            after = _State(cells, before.closed, tuple(counts), emitted, size, values)
+            after, batch = _stage_process(self.join, self._state, side, record)
             self._state = after
             return batch
 
     def close(self, side: str) -> JoinBatch:
-        """Signal this side's actual EOF; repeating the same signal is a no-op."""
+        """Signal this side\'s actual EOF; repeating the same signal is a no-op."""
         with self._operation():
-            if type(side) is not str or side not in self.join.sides:
-                raise ValidationError("unknown join input side")
-            before = self._state
-            index = self.join.sides.index(side)
-            if before.closed[index]:
-                return JoinBatch((), before.phase, len(before.cells))
-            closed = list(before.closed)
-            closed[index] = True
-            phase: JoinPhase = "open"
-            cells, size, values = before.cells, before.byte_size, before.values
-            if all(closed):
-                if self.join.emit_mode == "final" and cells:
-                    phase = "draining"
-                else:
-                    phase, cells, size, values = "closed", {}, 0, 0
-            batch = JoinBatch((), phase, len(cells))
-            after = _State(cells, tuple(closed), before.counts, before.emitted, size, values, phase)
+            after, batch = _stage_close(self.join, self._state, side)
             self._state = after
             return batch
 
     def drain(self, *, max_keys: int = 100) -> JoinBatch:
         """Commit a bounded sorted-key final batch; no key is partially emitted."""
         with self._operation():
-            _count(max_keys, "drain max_keys", 1, _HARD_LIMITS.max_keys)
-            before = self._state
-            if before.phase == "open":
-                raise ValidationError("all join sides must close before final draining")
-            if before.phase == "closed":
-                return JoinBatch((), "closed", 0)
-            selected: list[str] = []
-            row_count = byte_count = 0
-            limits = self.join.limits
-            for key in sorted(before.cells):
-                cell = before.cells[key]
-                if (
-                    len(selected) == max_keys
-                    or row_count + cell.rows > limits.max_rows_per_batch
-                    or byte_count + cell.output_bytes > limits.max_batch_bytes
-                ):
-                    break
-                selected.append(key)
-                row_count += cell.rows
-                byte_count += cell.output_bytes
-            emitted = before.emitted + row_count
-            _count(emitted, "emitted join rows", 0, _MAX_COUNT)
-            rows = tuple(
-                row for key in selected for row in _rows(key, before.cells[key], self.join.sides)
-            )
-            cells = dict(before.cells)
-            size, values = before.byte_size, before.values
-            for key in selected:
-                cell = cells.pop(key)
-                size -= cell.byte_size
-                values -= cell.count
-            phase: JoinPhase = "draining" if cells else "closed"
-            batch = JoinBatch(rows, phase, len(cells), len(selected))
-            after = _State(cells, before.closed, before.counts, emitted, size, values, phase)
+            after, batch = _stage_drain(self.join, self._state, max_keys)
             self._state = after
             return batch
 
@@ -739,6 +644,122 @@ class JoinRuntime:
             checkpoint.phase,
         )
         return runtime
+
+
+def _stage_process(
+    join: KeyedJoin,
+    before: _State,
+    side: str,
+    record: FlowRecord,
+    admit: Callable[[_State, int, int], None] | None = None,
+) -> tuple[_State, JoinBatch]:
+    if type(side) is not str or side not in join.sides:
+        raise ValidationError("unknown join input side")
+    index = join.sides.index(side)
+    if before.phase != "open" or before.closed[index]:
+        raise ValidationError("join side has already reached EOF")
+    if type(record) is not FlowRecord or record.key is None:
+        raise ValidationError("join inputs must be keyed FlowRecord values")
+    key = _key(record.key, "join input key")
+    limits = join.limits
+    encoded = _snapshot(record.value, limits.max_value_bytes)
+    counts = list(before.counts)
+    counts[index] += 1
+    _count(sum(counts), "total processed inputs", 0, _MAX_COUNT)
+    previous = before.cells.get(key)
+    sides = list(previous.values if previous else ((),) * len(join.sides))
+    if join.insert_mode == "product":
+        if len(sides[index]) == limits.max_values_per_side:
+            raise ValidationError("join side exceeds its retained value-count limit")
+        sides[index] = (*sides[index], encoded)
+    elif join.insert_mode == "last" or not sides[index]:
+        sides[index] = (encoded,)
+    proposed = _cell(key, tuple(sides), limits)
+    complete = join.emit_mode == "complete" and all(sides)
+    emit = complete or join.emit_mode == "running"
+    emitted = before.emitted + (proposed.rows if emit else 0)
+    _count(emitted, "emitted join rows", 0, _MAX_COUNT)
+    size = before.byte_size - (previous.byte_size if previous else 0)
+    values = before.values - (previous.count if previous else 0)
+    if not complete:
+        size += proposed.byte_size
+        values += proposed.count
+    keys = len(before.cells) + (0 if previous else 1) - int(complete)
+    if keys > limits.max_keys or size > limits.max_state_bytes or values > limits.max_values:
+        raise ValidationError("join retained state exceeds its aggregate limits")
+    cells = dict(before.cells)
+    if complete:
+        cells.pop(key, None)
+    else:
+        cells[key] = proposed
+    after = _State(cells, before.closed, tuple(counts), emitted, size, values)
+    if admit is not None:
+        admit(after, proposed.rows if emit else 0, proposed.output_bytes if emit else 0)
+    rows = tuple(_rows(key, proposed, join.sides)) if emit else ()
+    batch = JoinBatch(rows, "open", len(cells))
+    return after, batch
+
+
+def _stage_close(join: KeyedJoin, before: _State, side: str) -> tuple[_State, JoinBatch]:
+    if type(side) is not str or side not in join.sides:
+        raise ValidationError("unknown join input side")
+    index = join.sides.index(side)
+    if before.closed[index]:
+        return before, JoinBatch((), before.phase, len(before.cells))
+    closed = list(before.closed)
+    closed[index] = True
+    phase: JoinPhase = "open"
+    cells, size, values = before.cells, before.byte_size, before.values
+    if all(closed):
+        if join.emit_mode == "final" and cells:
+            phase = "draining"
+        else:
+            phase, cells, size, values = "closed", {}, 0, 0
+    batch = JoinBatch((), phase, len(cells))
+    after = _State(cells, tuple(closed), before.counts, before.emitted, size, values, phase)
+    return after, batch
+
+
+def _stage_drain(
+    join: KeyedJoin,
+    before: _State,
+    max_keys: int,
+    admit: Callable[[_State, int, int], None] | None = None,
+) -> tuple[_State, JoinBatch]:
+    _count(max_keys, "drain max_keys", 1, _HARD_LIMITS.max_keys)
+    if before.phase == "open":
+        raise ValidationError("all join sides must close before final draining")
+    if before.phase == "closed":
+        return before, JoinBatch((), "closed", 0)
+    selected: list[str] = []
+    row_count = byte_count = 0
+    limits = join.limits
+    for key in sorted(before.cells):
+        cell = before.cells[key]
+        if (
+            len(selected) == max_keys
+            or row_count + cell.rows > limits.max_rows_per_batch
+            or byte_count + cell.output_bytes > limits.max_batch_bytes
+        ):
+            break
+        selected.append(key)
+        row_count += cell.rows
+        byte_count += cell.output_bytes
+    emitted = before.emitted + row_count
+    _count(emitted, "emitted join rows", 0, _MAX_COUNT)
+    cells = dict(before.cells)
+    size, values = before.byte_size, before.values
+    for key in selected:
+        cell = cells.pop(key)
+        size -= cell.byte_size
+        values -= cell.count
+    phase: JoinPhase = "draining" if cells else "closed"
+    after = _State(cells, before.closed, before.counts, emitted, size, values, phase)
+    if admit is not None:
+        admit(after, row_count, byte_count)
+    rows = tuple(row for key in selected for row in _rows(key, before.cells[key], join.sides))
+    batch = JoinBatch(rows, phase, len(cells), len(selected))
+    return after, batch
 
 
 __all__ = ["JoinBatch", "JoinCheckpoint", "JoinLimits", "JoinRow", "JoinRuntime", "KeyedJoin"]

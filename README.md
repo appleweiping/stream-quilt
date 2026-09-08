@@ -21,6 +21,12 @@ arrivals with first/last/product and complete/final/running modes, explicit EOF,
 bounded final draining and strict portable snapshots. Run
 `python examples/keyed_join.py` for a three-side checkpoint/restart example;
 this local runtime does not imply multi-source DAG or journal transactions.
+The [multi-source graph API](docs/multi-source-graphs.md) now connects explicit
+source entries, the same operators and all nine keyed join modes in one local
+transaction, including downstream fanout, EOF propagation and checkpointable
+final draining. Run `python examples/multi_source_orders.py` for an offline
+restart example. Multi-source durable journals and external broker transactions
+remain separate work.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 

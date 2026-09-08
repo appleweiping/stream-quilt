@@ -385,7 +385,11 @@ class _FlowTransaction:
     """One staged state/callback budget shared by linear and graph schedulers."""
 
     def __init__(
-        self, limits: FlowLimits, state: dict[tuple[str, str], str], state_bytes: int
+        self,
+        limits: FlowLimits,
+        state: dict[tuple[str, str], str],
+        state_bytes: int,
+        on_propose: Callable[[tuple[str, str], str | None, str | None], None] | None = None,
     ) -> None:
         self.limits = limits
         self.state = state
@@ -393,6 +397,7 @@ class _FlowTransaction:
         self.projected_keys = len(state)
         self.projected_bytes = state_bytes
         self.calls = 0
+        self.on_propose = on_propose
 
     def invoke(self, function: Callable[..., Any], *args: Any) -> Any:
         self.calls += 1
@@ -416,6 +421,12 @@ class _FlowTransaction:
             or self.projected_bytes > self.limits.max_state_bytes
         ):
             raise ValidationError("dataflow keyed state capacity exceeded")
+        if self.on_propose is not None:
+            self.on_propose(
+                key,
+                str(previous) if previous is not _REMOVED else None,
+                str(replacement) if replacement is not _REMOVED else None,
+            )
         self.pending[key] = replacement
 
     def apply(

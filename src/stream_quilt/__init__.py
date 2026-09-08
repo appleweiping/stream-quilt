@@ -48,6 +48,17 @@ from stream_quilt.models import (
     Gap,
     RetentionPolicy,
 )
+from stream_quilt.multi_graph import (
+    FlowEntry,
+    FlowJoin,
+    GraphInput,
+    JoinEdge,
+    MultiGraphBatch,
+    MultiGraphCheckpoint,
+    MultiGraphDataflow,
+    MultiGraphLimits,
+    MultiGraphRuntime,
+)
 from stream_quilt.partition import PartitionedEvents, partition_events
 from stream_quilt.recovery import RecoveryConflict, RecoveryPoint, RecoveryStore, resume_events
 from stream_quilt.sessions import SessionResult, SessionWindow, sessionize
@@ -65,7 +76,9 @@ __all__ = [
     "FlowBranch",
     "FlowCheckpoint",
     "FlowEdge",
+    "FlowEntry",
     "FlowExecutionError",
+    "FlowJoin",
     "FlowJournal",
     "FlowLimits",
     "FlowMerge",
@@ -77,6 +90,7 @@ __all__ = [
     "Gap",
     "GraphCheckpoint",
     "GraphDataflow",
+    "GraphInput",
     "GraphJournal",
     "GraphJournalOutput",
     "GraphLimits",
@@ -85,6 +99,7 @@ __all__ = [
     "GraphRuntime",
     "JoinBatch",
     "JoinCheckpoint",
+    "JoinEdge",
     "JoinLimits",
     "JoinRow",
     "JoinRuntime",
@@ -92,6 +107,11 @@ __all__ = [
     "KeyedJoin",
     "LateEventError",
     "ModeBenchmark",
+    "MultiGraphBatch",
+    "MultiGraphCheckpoint",
+    "MultiGraphDataflow",
+    "MultiGraphLimits",
+    "MultiGraphRuntime",
     "OffsetEstimate",
     "OutputError",
     "PartitionedEvents",

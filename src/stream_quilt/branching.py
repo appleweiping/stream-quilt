@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import chain
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
 from .dataflow import (
     _MAX_COUNT,
@@ -136,17 +136,7 @@ class GraphDataflow:
             seen.add(edge)
             incoming[edge.target].append(edge)
             outgoing[edge.source].append(edge)
-        # Repeatedly select the earliest declared ready node. No callbacks run.
-        order: list[str] = []
-        remaining = dict.fromkeys(ids)
-        while remaining:
-            ready = next(
-                (key for key in remaining if all(e.source in order for e in incoming[key])), None
-            )
-            if ready is None:
-                raise ValidationError("graph must be acyclic")
-            order.append(ready)
-            del remaining[ready]
+        order = _topological_order(tuple(ids), incoming)
         reachable = {self.entry}
         for key in order:
             if key in reachable:
@@ -242,6 +232,103 @@ class GraphOutput:
 
     def to_dict(self) -> dict[str, Any]:
         return {"step_id": self.step_id, **self.record.to_dict()}
+
+
+class _Edge(Protocol):
+    @property
+    def source(self) -> str: ...
+    @property
+    def target(self) -> str: ...
+    @property
+    def route(self) -> bool | None: ...
+
+
+_EdgeT = TypeVar("_EdgeT", bound=_Edge)
+
+
+def _topological_order(
+    ids: tuple[str, ...],
+    incoming: Mapping[str, Iterable[_EdgeT]],
+) -> tuple[str, ...]:
+    """Earliest-declared-ready order shared by single- and multi-entry graphs."""
+    order: list[str] = []
+    remaining = dict.fromkeys(ids)
+    while remaining:
+        ready = next(
+            (key for key in remaining if all(edge.source in order for edge in incoming[key])), None
+        )
+        if ready is None:
+            raise ValidationError("graph must be acyclic")
+        order.append(ready)
+        del remaining[ready]
+    return tuple(order)
+
+
+def _walk_graph(
+    order: tuple[str, ...],
+    nodes: Mapping[str, Any],
+    incoming: Mapping[str, tuple[_EdgeT, ...]],
+    outgoing: Mapping[str, tuple[_EdgeT, ...]],
+    seeds: Mapping[str, tuple[FlowRecord, ...]],
+    transaction: _FlowTransaction,
+    charge: Callable[[FlowRecord], None],
+    *,
+    extension: Callable[
+        [str, tuple[tuple[_EdgeT, tuple[FlowRecord, ...]], ...]], tuple[FlowRecord, ...]
+    ]
+    | None = None,
+    seed_outputs: Mapping[str, tuple[FlowRecord, ...]] | None = None,
+    delivered: Callable[[_EdgeT, int], None] | None = None,
+) -> list[GraphOutput]:
+    """One shared deterministic walk; empty operation batches are NOT stream EOF."""
+    mailboxes: dict[_EdgeT, tuple[FlowRecord, ...]] = {}
+    published: list[GraphOutput] = []
+    for key in order:
+        node = nodes[key]
+        batches = tuple((edge, mailboxes.pop(edge, ())) for edge in incoming[key])
+        current = chain(seeds.get(key, ()), chain.from_iterable(batch for _, batch in batches))
+        try:
+            routed: dict[bool | None, tuple[FlowRecord, ...]]
+            if seed_outputs is not None and key in seed_outputs:
+                batch = seed_outputs[key]
+                for item in batch:
+                    charge(item)
+                routed = {None: batch}
+            elif isinstance(node, FlowStep):
+                routed = {None: transaction.apply(node, current, charge)}
+            elif isinstance(node, FlowBranch):
+                branches: dict[bool, list[FlowRecord]] = {True: [], False: []}
+                for item in current:
+                    route = transaction.invoke(node.predicate, item.value)
+                    if type(route) is not bool:
+                        raise ValidationError("branch predicate must return bool")
+                    charge(item)
+                    branches[route].append(item)
+                routed = {route: tuple(batch) for route, batch in branches.items()}
+            elif isinstance(node, FlowMerge):
+                merged = []
+                for item in current:
+                    charge(item)
+                    merged.append(item)
+                routed = {None: tuple(merged)}
+            elif extension is not None:
+                # The extension charges emissions as transitions run, before the
+                # next transition's allocation preflight uses the work budget.
+                routed = {None: extension(key, batches)}
+            else:
+                raise ValidationError("unsupported graph node")
+            for edge in outgoing[key]:
+                batch = routed[edge.route]
+                if delivered is not None:
+                    delivered(edge, len(batch))
+                for item in batch:
+                    charge(item)
+                mailboxes[edge] = batch
+            if not outgoing[key]:
+                published.extend(GraphOutput(key, item) for item in routed[None])
+        except Exception:
+            raise FlowExecutionError(key) from None
+    return published
 
 
 class GraphRuntime:
@@ -342,45 +429,15 @@ class GraphRuntime:
                 raise ValidationError("graph aggregate per-input work budget exceeded")
 
         charge(record)
-        mailboxes: dict[FlowEdge, tuple[FlowRecord, ...]] = {}
-        published: list[GraphOutput] = []
-        for key in self.flow.execution_order:
-            node = self._nodes[key]
-            # Edge batches are already charged. Empty branches still close their
-            # edge with an empty tuple; merge never waits for another input.
-            current = (
-                iter((record,))
-                if key == self.flow.entry
-                else chain.from_iterable(mailboxes.pop(edge) for edge in self._incoming[key])
-            )
-            try:
-                routed: dict[bool | None, tuple[FlowRecord, ...]]
-                if isinstance(node, FlowStep):
-                    routed = {None: transaction.apply(node, current, charge)}
-                elif isinstance(node, FlowBranch):
-                    branches: dict[bool, list[FlowRecord]] = {True: [], False: []}
-                    for item in current:
-                        route = transaction.invoke(node.predicate, item.value)
-                        if type(route) is not bool:
-                            raise ValidationError("branch predicate must return bool")
-                        charge(item)
-                        branches[route].append(item)
-                    routed = {route: tuple(batch) for route, batch in branches.items()}
-                else:
-                    merged = []
-                    for item in current:
-                        charge(item)
-                        merged.append(item)
-                    routed = {None: tuple(merged)}
-                for edge in self._outgoing[key]:
-                    batch = routed[edge.route]
-                    for item in batch:
-                        charge(item)
-                    mailboxes[edge] = batch
-                if not self._outgoing[key]:
-                    published.extend(GraphOutput(key, item) for item in routed[None])
-            except Exception:
-                raise FlowExecutionError(key) from None
+        published = _walk_graph(
+            self.flow.execution_order,
+            self._nodes,
+            self._incoming,
+            self._outgoing,
+            {self.flow.entry: (record,)},
+            transaction,
+            charge,
+        )
         processed_inputs = self.processed_inputs + 1
         emitted_records = _count(
             self.emitted_records + len(published), "emitted_records", 0, _MAX_COUNT
