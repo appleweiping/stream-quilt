@@ -24,3 +24,12 @@ watermark update uncommitted, so callers can fail closed without losing an unret
 
 Alignment does not establish provenance or authenticity. Sign and verify events before ingestion when
 the source affects safety, access control, billing, or compliance.
+
+`LocalPartitionedFlow` is an explicitly trusted-code execution API. Its bounded
+startup pickle contains only the caller-supplied Python `Dataflow` and is loaded
+only by its owned spawn children. Never supply untrusted Python objects or
+replace those children with an untrusted peer. Runtime data and portable
+checkpoints use strict bounded JSON, not pickle. Callbacks can access the host,
+allocate memory and spawn descendants; this is not an OS sandbox. Force-stopping
+owned workers neither guarantees callback `finally` execution nor kills their
+descendants. See [worker lifecycle and limits](docs/local-partitioned-flow.md).

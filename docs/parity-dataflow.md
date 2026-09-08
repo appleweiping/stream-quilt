@@ -11,14 +11,14 @@ linear and bounded DAG operator runtimes. It does not implement a distributed da
 
 | Reference surface | Current evidence | Remaining work |
 |---|---|---|
-| `dataflow.py`, typed stream/operator graph | Validated bounded linear, single-entry and explicit multi-source DAGs over isolated JSON records; shared operators, semantic revision and topology inspection | Typed edges, multi-worker lifecycle and distributed progress |
+| `dataflow.py`, typed stream/operator graph | Validated bounded linear, single-entry and explicit multi-source DAGs over isolated JSON records; shared operators, semantic revision and topology inspection; real spawn workers for the key-preserving single-source linear subset | Typed edges, multi-source/graph worker lifecycle and distributed progress |
 | `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, fanout, strict boolean branching and edge-ordered merge; bounded expansion and pull-based source consumption | General batches and full cross-operator reference conformance |
 | `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map and stateful_flat_map, explicit deletion/emission, ordered expansion, per-input rollback and strict portable snapshots | Stateful batch, notifications, EOF handling and partition ownership |
 | Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; incremental `JoinRuntime` and multi-source DAG join nodes with all nine insertion/emission combinations, explicit EOF and checkpointable final drain; local multi-source SQLite journal integration | Event-time join windows, final aggregation and collection contracts; cache expiration and enrichment error handling |
 | `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation | General window logic/aggregation, processing-time clocks, idle notification, mergeable state and window metadata streams |
 | `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers; aligner/general-flow local transactional SQLite sinks | Source/sink partition protocols, external broker offsets, connector cancellation/retry, Kafka serde and broker integration verification |
 | `recovery.py`, Rust recovery implementation | Strict aligner and keyed-flow snapshots, atomic offset/state/output SQLite transactions, CAS writer conflicts; aligner restart CLI and general-flow restart API | Distributed epochs, partition migration and recovery coordination, backup/retention policy and real external source/sink delivery contracts |
-| Rust `worker.rs`, `run.rs`, `timely.rs`, `operators.rs` | Deterministic local partition assignment helper | Actual multi-process/multi-node operators, transport/exchange, progress coordination, worker failure handling and compiled hot paths |
+| Rust `worker.rs`, `run.rs`, `timely.rs`, `operators.rs` | Actual bounded spawn execution of key-preserving linear Flow, deterministic ingress routing, parallel all-shard dispatch, ordered candidate collection, parent-authoritative checkpoints and owned worker/transport failure cleanup | Per-stage exchange, multi-source join co-location/execution, multi-node progress, durable distributed recovery, migration/rescaling and compiled hot paths |
 | `testing.py`, `run.py`, errors | CLI, independent expected windows, separate-process restart/crash/rollback tests | General flow test harness, worker/cluster launcher and cross-operator failure propagation contracts |
 | `visualize.py`, metrics, tracing and webserver | Local JSON/Markdown alignment diagnostics | Flow visualization, runtime metrics service, Jaeger/OTLP tracing, deployment and operational security |
 | Examples, docs and evaluation | Alignment examples and existing synthetic alignment benchmarks | Full operator/connector tutorials, independently reproduced runtime/throughput/memory workloads, deployment examples and remaining exhaustive API review |
@@ -31,6 +31,39 @@ and the [runtime source tree](https://github.com/bytewax/bytewax/tree/9fce5b6ee4
 No upstream implementation was copied into this project. API inventory is still
 not an exhaustive reviewed contract catalogue; each row needs finer-grained
 behavioral acceptance work before it can close.
+
+## Local multi-worker linear increment
+
+`LocalPartitionedFlow` now runs the existing key-preserving linear Flow in actual
+spawn children, not sequential calls labelled workers. One source-positioned wave
+dispatches every participating shard before awaiting results. Same-key state is
+co-located; outputs retain original source order. All candidate state, outputs,
+global budgets and the return object are validated before one parent publication.
+The separate portable checkpoint fixes worker count/routing and distinguishes
+the original source offset from each worker's input count. Process failure or
+cancellation does not publish a partial wave or automatically repeat callbacks.
+
+The exact scope is in [local worker contracts](local-partitioned-flow.md). A real
+two-PID barrier proves concurrent dispatch, while an independent seeded serial
+oracle spans all five key-preserving operators and portable restart. Separate
+tests cover OS process death, large pipe frames, cleanup refusal/retry, original
+control exceptions, strict wire, aggregate budgets and exclusive pull ownership.
+Final warnings-as-errors verification passed 1,525 full tests on Windows Python
+3.12.13, with one existing 3.13+ generator-return-value skip and 97.0156268359%
+combined coverage under the unchanged 95% gate. Python 3.14.5 passed all 202 new
+focused cases, including 14 cases that start real child processes and two pre-start
+rejections. The parallel oracle spans 50 inputs,
+five preserving operators, three workers and two process sessions. A separate
+frozen-`767128a` comparison matched 1,536 complete old v1 checkpoint/output steps
+and 4,628 output rows across 64 seeded sequences and repeated restores.
+
+This does not parallelize `MultiGraphRuntime` or its joins/journal, supply source
+connector partitions, redistribute keys between stages or coordinate durable
+distributed epochs. The frozen first-party
+[worker model](https://github.com/bytewax/bytewax/blob/9fce5b6ee43780329b05a2ecc1057ffddd51255d/docs/guide/concepts/workers-parallelization.md),
+[rescaling contract](https://github.com/bytewax/bytewax/blob/9fce5b6ee43780329b05a2ecc1057ffddd51255d/docs/guide/concepts/rescaling.md)
+and [input protocol](https://github.com/bytewax/bytewax/blob/9fce5b6ee43780329b05a2ecc1057ffddd51255d/pysrc/bytewax/inputs.py)
+remain broader than this implementation. No whole-reference completion is claimed.
 
 ## Recovery increment evidence
 
