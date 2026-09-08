@@ -14,7 +14,7 @@ linear and bounded DAG operator runtimes. It does not implement a distributed da
 | `dataflow.py`, typed stream/operator graph | Validated bounded linear, single-entry and explicit multi-source DAGs over isolated JSON records; shared operators, semantic revision and topology inspection | Typed edges, multi-worker lifecycle and distributed progress |
 | `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, fanout, strict boolean branching and edge-ordered merge; bounded expansion and pull-based source consumption | General batches and full cross-operator reference conformance |
 | `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map and stateful_flat_map, explicit deletion/emission, ordered expansion, per-input rollback and strict portable snapshots | Stateful batch, notifications, EOF handling and partition ownership |
-| Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; incremental `JoinRuntime` and multi-source DAG join nodes with all nine insertion/emission combinations, explicit EOF and checkpointable final drain | Multi-source durable journal integration, event-time join windows, final aggregation and collection contracts; cache expiration and enrichment error handling |
+| Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; incremental `JoinRuntime` and multi-source DAG join nodes with all nine insertion/emission combinations, explicit EOF and checkpointable final drain; local multi-source SQLite journal integration | Event-time join windows, final aggregation and collection contracts; cache expiration and enrichment error handling |
 | `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation | General window logic/aggregation, processing-time clocks, idle notification, mergeable state and window metadata streams |
 | `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers; aligner/general-flow local transactional SQLite sinks | Source/sink partition protocols, external broker offsets, connector cancellation/retry, Kafka serde and broker integration verification |
 | `recovery.py`, Rust recovery implementation | Strict aligner and keyed-flow snapshots, atomic offset/state/output SQLite transactions, CAS writer conflicts; aligner restart CLI and general-flow restart API | Distributed epochs, partition migration and recovery coordination, backup/retention policy and real external source/sink delivery contracts |
@@ -325,3 +325,45 @@ durable operation journals, broker partition ownership/acknowledgement, external
 sink transactions, event-time join windows, general notifications and worker
 coordination remain open. Portable local snapshots do not establish any of
 those guarantees or whole-repository reference equivalence.
+
+## Multi-source durable journal increment
+
+From signed baseline `9c7dda6606aa10785431e23409eea2caa7519d5a`,
+`MultiGraphJournal` adds a distinct SQMJ four-table SQLite format. Complete
+immutable requests bind original generation and command content; retained
+receipts resolve identical retries and commit-ack loss after later commits.
+One full-head CAS covers process/EOF/drain causes, source vectors, all existing
+ordinary/join state and terminal outputs. Pure no-ops do not reserve request IDs
+or advance history. The same runtime, JSON machinery and connection ownership
+are reused while old v1 formats remain unchanged.
+
+Read [the exact journal contract and resource profile](multi-source-journal.md).
+Detached pages have fixed retained-prefix cursors and bounded provenance checks.
+They are not consumer acknowledgements or Merkle/authentication proofs. Callback
+effects can occur before a losing CAS and can occur in both same-request writers;
+only local publication is idempotent. Current checkpoint/adjacent receipt checks
+and selected commit metadata are necessary invariants, not whole-history replay.
+
+Focused verification includes independent nine-mode list oracles across real
+SQLite restarts, real writer barriers, true COMMIT-before-raise outcomes, process
+death at four precommit write points, no-op races, whole-request rollback,
+bounded SQL materialization, strict request/cursor shapes and page progress.
+Windows Python 3.12.13 full coverage passed: **1,323 passed / one existing
+Python-version skip**, 275.25 seconds, **97.17%** branch-inclusive coverage.
+Separately, all 141 new cases plus 108 existing journal cases passed with
+resource/runtime warnings treated as errors. A read-only baseline differential
+matched 80 complete v1 heads and 1,500 cumulative output rows byte-for-byte
+across 20 real SQLite configurations. All 141 new tests also passed on Python
+3.14.5 in 43.58 seconds with resource/runtime warnings treated as errors.
+Ruff lint/format, strict Mypy (28 source modules), Bandit, frozen-lock checking
+and whitespace checks passed. No local Linux full or hosted CI result is inferred.
+
+An isolated Python 3.14.5 environment installed only the wheel with
+`--no-index --no-deps`, then exercised all nine journal join modes, actual SQLite
+restarts, persisted receipts, fixed-prefix pages, no-ops and the offline example.
+All 28 Python modules matched the checkout byte-for-byte in both wheel and
+installation. Wheel/sdist builds, strict Twine metadata and wheel-content checks
+passed; all 14 changed source/test/doc/example files matched the final sdist
+byte-for-byte. Artifact verification is not inferred from a source-tree test run.
+Distributed delivery, authenticated history, external transactions, event-time
+windows, retention and the remaining whole-reference ledger stay open.

@@ -25,8 +25,12 @@ The [multi-source graph API](docs/multi-source-graphs.md) now connects explicit
 source entries, the same operators and all nine keyed join modes in one local
 transaction, including downstream fanout, EOF propagation and checkpointable
 final draining. Run `python examples/multi_source_orders.py` for an offline
-restart example. Multi-source durable journals and external broker transactions
-remain separate work.
+restart example. [MultiGraphJournal](docs/multi-source-journal.md) adds a separate
+four-table SQLite protocol for atomic multi-source commands, vector state and
+outputs, with persistent request receipts, explicit EOF/drain causes and fixed
+output cursors. Run `python examples/durable_multi_source_orders.py` for offline
+restart and lost-response reconciliation. External broker/sink transactions
+and distributed recovery remain separate work.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 

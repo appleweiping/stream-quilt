@@ -29,7 +29,8 @@ _MAX_BATCH_INPUTS = 10_000
 _MAX_BATCH_OUTPUTS = 100_000
 
 
-def _encode(value: Any) -> str:
+def _encode(value: Any, *, max_bytes: int | None = None, label: str = "flow journal") -> str:
+    maximum = _MAX_DOCUMENT_BYTES if max_bytes is None else max_bytes
     chunks: list[str] = []
     size = 0
     encoder = json.JSONEncoder(
@@ -38,11 +39,12 @@ def _encode(value: Any) -> str:
     try:
         for chunk in encoder.iterencode(value):
             size += len(chunk.encode("utf-8"))
-            if size > _MAX_DOCUMENT_BYTES:
-                raise ValidationError("flow journal document exceeds 64 MiB")
+            if size > maximum:
+                detail = "64 MiB" if max_bytes is None else f"{maximum} bytes"
+                raise ValidationError(f"{label} document exceeds {detail}")
             chunks.append(chunk)
     except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
-        raise ValidationError("flow journal requires bounded finite JSON") from exc
+        raise ValidationError(f"{label} requires bounded finite JSON") from exc
     return "".join(chunks)
 
 
@@ -50,15 +52,25 @@ def _digest(payload: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _decode(payload: Any, digest: Any, size: Any) -> Any:
+def _decode(
+    payload: Any,
+    digest: Any,
+    size: Any,
+    *,
+    max_bytes: int | None = None,
+    label: str = "flow journal",
+) -> Any:
+    maximum = _MAX_DOCUMENT_BYTES if max_bytes is None else max_bytes
     if (
         type(payload) is not str
         or type(size) is not int
-        or not 0 <= size <= _MAX_DOCUMENT_BYTES
+        or not 0 <= size <= maximum
+        or len(payload) > maximum
+        or len(payload.encode("utf-8")) != size
         or type(digest) is not str
         or digest != _digest(payload)
     ):
-        raise ValidationError("invalid or corrupted flow journal document")
+        raise ValidationError(f"invalid or corrupted {label} document")
     try:
         document = json.loads(
             payload,
@@ -67,9 +79,9 @@ def _decode(payload: Any, digest: Any, size: Any) -> Any:
             parse_float=_finite_json_float,
         )
     except (ValueError, RecursionError) as exc:
-        raise ValidationError("invalid flow journal JSON") from exc
-    if _encode(document) != payload:
-        raise ValidationError("flow journal document must use canonical JSON")
+        raise ValidationError(f"invalid {label} JSON") from exc
+    if _encode(document, max_bytes=max_bytes, label=label) != payload:
+        raise ValidationError(f"{label} document must use canonical JSON")
     return document
 
 
@@ -206,7 +218,9 @@ _PointT = TypeVar("_PointT", bound=_Point)
 _OutputT = TypeVar("_OutputT", bound=_Output)
 
 
-def _finish_connection(connection: sqlite3.Connection, primary: BaseException | None) -> None:
+def _finish_connection(
+    connection: sqlite3.Connection, primary: BaseException | None, *, label: str = "flow journal"
+) -> None:
     failures: list[tuple[str, BaseException]] = []
     for name, operation in (
         ("rollback", connection.rollback if primary is not None else None),
@@ -218,7 +232,12 @@ def _finish_connection(connection: sqlite3.Connection, primary: BaseException | 
             except BaseException as error:
                 failures.append((name, error))
     if failures:
-        detail = "flow journal cleanup failed: " + ", ".join(name for name, _ in failures)
+        detail = label + " cleanup failed: " + ", ".join(name for name, _ in failures)
+        # Preserve the first genuine control exception after attempting every closer.
+        # GeneratorExit is normal iterator close signalling; cleanup failures stay visible.
+        if primary is not None and not isinstance(primary, (Exception, GeneratorExit)):
+            primary.add_note(detail)
+            return
         for _, failure in failures:
             if not isinstance(failure, Exception):
                 failure.add_note(detail)
@@ -228,6 +247,29 @@ def _finish_connection(connection: sqlite3.Connection, primary: BaseException | 
                 detail + "; inspect latest before replay; a commit may already exist"
             ) from failures[0][1]
         primary.add_note(detail)
+
+
+@contextmanager
+def _connection_scope(
+    connection: sqlite3.Connection, *, label: str = "flow journal"
+) -> Iterator[sqlite3.Connection]:
+    """Shared commit/cleanup ownership, independent of a journal's SQL schema."""
+    primary: BaseException | None = None
+    try:
+        yield connection
+        try:
+            connection.commit()
+        except BaseException as error:
+            detail = f"{label} commit outcome unknown; inspect latest before replay"
+            if isinstance(error, Exception):
+                raise OutputError(detail) from error
+            error.add_note(detail)
+            raise
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        _finish_connection(connection, primary, label=label)
 
 
 class _JournalEngine(Generic[_SpecT, _PointT, _OutputT], ABC):
@@ -314,23 +356,8 @@ class _JournalEngine(Generic[_SpecT, _PointT, _OutputT], ABC):
 
     @contextmanager
     def _transaction(self, *, create: bool = False) -> Iterator[sqlite3.Connection]:
-        connection = self._connect(create=create)
-        primary: BaseException | None = None
-        try:
+        with _connection_scope(self._connect(create=create)) as connection:
             yield connection
-            try:
-                connection.commit()
-            except BaseException as error:
-                detail = "flow journal commit outcome unknown; inspect latest before replay"
-                if isinstance(error, Exception):
-                    raise OutputError(detail) from error
-                error.add_note(detail)
-                raise
-        except BaseException as error:
-            primary = error
-            raise
-        finally:
-            _finish_connection(connection, primary)
 
     def _connect(self, *, create: bool = False) -> sqlite3.Connection:
         # mode=rw avoids silently recreating a journal removed after construction.
