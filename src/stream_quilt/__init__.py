@@ -72,6 +72,16 @@ from stream_quilt.multi_journal import (
     MultiGraphRequest,
 )
 from stream_quilt.partition import PartitionedEvents, partition_events
+from stream_quilt.partitioned_flow import (
+    LocalPartitionedFlow,
+    LocalWorkerCleanup,
+    LocalWorkerError,
+    LocalWorkerLimits,
+    LocalWorkerStatus,
+    PartitionedFlowBatch,
+    PartitionedFlowCheckpoint,
+    PartitionedFlowOutput,
+)
 from stream_quilt.recovery import RecoveryConflict, RecoveryPoint, RecoveryStore, resume_events
 from stream_quilt.sessions import SessionResult, SessionWindow, sessionize
 
@@ -120,6 +130,11 @@ __all__ = [
     "JoinedPair",
     "KeyedJoin",
     "LateEventError",
+    "LocalPartitionedFlow",
+    "LocalWorkerCleanup",
+    "LocalWorkerError",
+    "LocalWorkerLimits",
+    "LocalWorkerStatus",
     "ModeBenchmark",
     "MultiGraphBatch",
     "MultiGraphCheckpoint",
@@ -137,6 +152,9 @@ __all__ = [
     "OffsetEstimate",
     "OutputError",
     "PartitionedEvents",
+    "PartitionedFlowBatch",
+    "PartitionedFlowCheckpoint",
+    "PartitionedFlowOutput",
     "RecoveryConflict",
     "RecoveryPoint",
     "RecoveryStore",

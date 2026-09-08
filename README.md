@@ -31,6 +31,13 @@ outputs, with persistent request receipts, explicit EOF/drain causes and fixed
 output cursors. Run `python examples/durable_multi_source_orders.py` for offline
 restart and lost-response reconciliation. External broker/sink transactions
 and distributed recovery remain separate work.
+The separate [local partitioned Flow](docs/local-partitioned-flow.md) executes
+key-preserving linear operators in real `spawn` processes. Bounded waves dispatch
+all participating workers before collecting candidates; one parent checkpoint
+publishes only after every shard and the global budgets pass. Run
+`python examples/local_partitioned_totals.py` for actual worker PIDs, ordered
+outputs and a portable-checkpoint restart. This does not parallelize multi-source
+graphs or supply durable distributed recovery.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 

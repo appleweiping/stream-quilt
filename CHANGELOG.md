@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `LocalPartitionedFlow` runs bounded keyed linear flows in actual spawn workers,
+  with global admission, ordered outputs, portable shard checkpoints and one
+  parent publication point. Failure/cancellation does not publish partial waves
+  or retry callbacks. Multi-source graphs and durable journals are not distributed
+  by this API; startup code remains explicitly trusted Python.
 - `MultiGraphJournal` adds atomic multi-source process/EOF/drain recovery in a
   distinct bounded SQLite format, reusing the existing graph runtime. Complete
   immutable requests and retained receipts support idempotent publication and
