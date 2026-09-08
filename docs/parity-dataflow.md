@@ -1,6 +1,6 @@
 # Whole-repository dataflow gap ledger
 
-Status: **OPEN**, assessed 2026-09-07 against the fixed
+Status: **OPEN**, assessed 2026-09-08 against the fixed
 [Bytewax repository at 9fce5b6ee43780329b05a2ecc1057ffddd51255d](https://github.com/bytewax/bytewax/tree/9fce5b6ee43780329b05a2ecc1057ffddd51255d).
 The complete reference tree contains 281 files; 127 Python/Rust/C-family/TS
 code-extension files total 841,358 bytes, including tests/tooling. This is a
@@ -11,10 +11,10 @@ linear and bounded DAG operator runtimes. It does not implement a distributed da
 
 | Reference surface | Current evidence | Remaining work |
 |---|---|---|
-| `dataflow.py`, typed stream/operator graph | Validated bounded linear and acyclic branching graphs over isolated JSON records; explicit semantic revision and topology inspection | Typed edges, multi-source graphs and multi-worker lifecycle |
+| `dataflow.py`, typed stream/operator graph | Validated bounded linear, single-entry and explicit multi-source DAGs over isolated JSON records; shared operators, semantic revision and topology inspection | Typed edges, multi-worker lifecycle and distributed progress |
 | `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, fanout, strict boolean branching and edge-ordered merge; bounded expansion and pull-based source consumption | General batches and full cross-operator reference conformance |
 | `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map and stateful_flat_map, explicit deletion/emission, ordered expansion, per-input rollback and strict portable snapshots | Stateful batch, notifications, EOF handling and partition ownership |
-| Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; separate bounded incremental `JoinRuntime` with all nine insertion/emission combinations, explicit side EOF and checkpointable final drain | Multi-source graph/journal integration, event-time join windows, final aggregation and collection contracts; cache expiration and enrichment error handling |
+| Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; incremental `JoinRuntime` and multi-source DAG join nodes with all nine insertion/emission combinations, explicit EOF and checkpointable final drain | Multi-source durable journal integration, event-time join windows, final aggregation and collection contracts; cache expiration and enrichment error handling |
 | `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation | General window logic/aggregation, processing-time clocks, idle notification, mergeable state and window metadata streams |
 | `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers; aligner/general-flow local transactional SQLite sinks | Source/sink partition protocols, external broker offsets, connector cancellation/retry, Kafka serde and broker integration verification |
 | `recovery.py`, Rust recovery implementation | Strict aligner and keyed-flow snapshots, atomic offset/state/output SQLite transactions, CAS writer conflicts; aligner restart CLI and general-flow restart API | Distributed epochs, partition migration and recovery coordination, backup/retention policy and real external source/sink delivery contracts |
@@ -280,3 +280,48 @@ specified rows and per-side counts `(3, 3, 2)`. Those example writes are not a
 production atomic source/state/output transaction. Multi-source graph/journal
 integration, broker-offset ownership, event-time windows, distributed joins and
 the other full-reference rows remain open.
+
+## Multi-source local DAG increment
+
+From signed baseline `75926503e50a7a5bcaa3fd3f8b18f463719482d7`,
+`MultiGraphDataflow` integrates explicitly tagged source entries and keyed join
+nodes with the existing shared map/filter/expansion/keyed-state/branch/merge
+operators and downstream fanout. It implements all nine join mode combinations,
+explicit per-source EOF, nested final-join drainage and one outer transaction
+covering ordinary/join state, source positions, EOF, edge counters and outputs.
+The single-entry graph API and all existing v1 checkpoint/journal wire kinds
+remain unchanged. No reference source was copied.
+
+The [multi-source contract](multi-source-graphs.md) documents local sequential
+positions rather than broker acknowledgements, reserved fanout work, Cartesian
+row preflight, aggregate canonical cell-wire bounds, strict versioned portable
+checkpoints and actual EOF frontiers. The final 179 new focused cases passed,
+including an independent nine-mode × three-seed reference interpreter with
+restore after every operation, nested/partial final drain, empty branch EOF,
+cross-node control/allocation rollback and hostile configuration/checkpoint
+inputs. A read-only old-versus-new comparison matched 1,200 complete v1
+output/checkpoint results across 100 seeded graphs and preserved every identity.
+
+The final Windows Python 3.12.13 full gate passed 1,182 tests in 327.92 seconds,
+with one existing Python-3.13+-only generator-close test skipped. JUnit records
+1,183 collected cases, zero failures and zero errors. Combined statement/branch
+coverage was 97.47%; `multi_checkpoint.py` was 100% (201 statements, 96 branches)
+and `multi_graph.py` was 99.15% (428 statements, 162 branches). The 179 focused
+cases also passed on Python 3.14.5 in 24.84 seconds, with runtime/resource
+warnings treated as errors. Ruff lint/format, strict Mypy (26 modules), Bandit,
+frozen-lock checking and diff whitespace checks passed. These results do not
+claim a local full Linux or already-completed hosted CI run for this increment.
+
+Wheel/sdist builds, strict Twine metadata and wheel-content validation passed.
+A separate Python 3.14.5 environment installed only the wheel with `--no-index
+--no-deps`, then exercised all nine graph join modes, checkpoint restart and the
+offline example. All 26 Python modules matched the checkout byte-for-byte in
+both wheel and isolated installation; all 12 changed source/test/doc/example
+files matched the sdist. This verifies the artifact under test, not a release
+or a claim of additional platform coverage.
+
+This narrows the **local multi-source graph integration** gap only. Multi-source
+durable operation journals, broker partition ownership/acknowledgement, external
+sink transactions, event-time join windows, general notifications and worker
+coordination remain open. Portable local snapshots do not establish any of
+those guarantees or whole-repository reference equivalence.
