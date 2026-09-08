@@ -13,6 +13,9 @@ publication across siblings. [GraphJournal](docs/graph-journal.md) persists the
 graph's source position, all keyed state and terminal output provenance in one
 SQLite CAS transaction. Run `python examples/durable_branching_totals.py` for
 offline restart/replay; no automatic retry or external exactly-once claim.
+Keyed [`stateful_flat_map`](docs/stateful-expansion.md) callbacks can atomically
+replace or delete state and emit zero-to-many ordered values in either runtime,
+including durable linear and graph journal recovery.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 

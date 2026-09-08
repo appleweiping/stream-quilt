@@ -299,7 +299,7 @@ class GraphRuntime:
         stateful = {
             node.step_id
             for node in flow.nodes
-            if isinstance(node, FlowStep) and node.operator == "stateful_map"
+            if isinstance(node, FlowStep) and node.operator in ("stateful_map", "stateful_flat_map")
         }
         for step, key, value in checked.cells:
             if step not in stateful or len(value.encode()) > limits.max_state_value_bytes:

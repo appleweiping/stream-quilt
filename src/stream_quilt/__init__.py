@@ -23,6 +23,7 @@ from stream_quilt.dataflow import (
     FlowRecord,
     FlowRuntime,
     FlowStep,
+    StateFlatUpdate,
     StateUpdate,
 )
 from stream_quilt.errors import LateEventError, OutputError, StreamQuiltError, ValidationError
@@ -86,6 +87,7 @@ __all__ = [
     "RetentionPolicy",
     "SessionResult",
     "SessionWindow",
+    "StateFlatUpdate",
     "StateUpdate",
     "StreamJoin",
     "StreamQuiltError",
