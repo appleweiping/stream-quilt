@@ -31,6 +31,14 @@ from stream_quilt.flow_journal import FlowJournal, FlowOutput, FlowRecoveryPoint
 from stream_quilt.graph_journal import GraphJournal, GraphJournalOutput, GraphRecoveryPoint
 from stream_quilt.io import config_from_dict, event_from_dict, load_config, load_events
 from stream_quilt.joins import JoinedPair, StreamJoin, join_streams
+from stream_quilt.keyed_join import (
+    JoinBatch,
+    JoinCheckpoint,
+    JoinLimits,
+    JoinRow,
+    JoinRuntime,
+    KeyedJoin,
+)
 from stream_quilt.models import (
     AlignedWindow,
     AlignmentConfig,
@@ -75,7 +83,13 @@ __all__ = [
     "GraphOutput",
     "GraphRecoveryPoint",
     "GraphRuntime",
+    "JoinBatch",
+    "JoinCheckpoint",
+    "JoinLimits",
+    "JoinRow",
+    "JoinRuntime",
     "JoinedPair",
+    "KeyedJoin",
     "LateEventError",
     "ModeBenchmark",
     "OffsetEstimate",

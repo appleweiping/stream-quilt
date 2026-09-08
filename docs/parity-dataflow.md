@@ -14,7 +14,7 @@ linear and bounded DAG operator runtimes. It does not implement a distributed da
 | `dataflow.py`, typed stream/operator graph | Validated bounded linear and acyclic branching graphs over isolated JSON records; explicit semantic revision and topology inspection | Typed edges, multi-source graphs and multi-worker lifecycle |
 | `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, fanout, strict boolean branching and edge-ordered merge; bounded expansion and pull-based source consumption | General batches and full cross-operator reference conformance |
 | `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map and stateful_flat_map, explicit deletion/emission, ordered expansion, per-input rollback and strict portable snapshots | Stateful batch, notifications, EOF handling and partition ownership |
-| Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams` | Incremental keyed joins, final aggregation and collection contracts; cache expiration and enrichment error handling |
+| Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; separate bounded incremental `JoinRuntime` with all nine insertion/emission combinations, explicit side EOF and checkpointable final drain | Multi-source graph/journal integration, event-time join windows, final aggregation and collection contracts; cache expiration and enrichment error handling |
 | `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation | General window logic/aggregation, processing-time clocks, idle notification, mergeable state and window metadata streams |
 | `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers; aligner/general-flow local transactional SQLite sinks | Source/sink partition protocols, external broker offsets, connector cancellation/retry, Kafka serde and broker integration verification |
 | `recovery.py`, Rust recovery implementation | Strict aligner and keyed-flow snapshots, atomic offset/state/output SQLite transactions, CAS writer conflicts; aligner restart CLI and general-flow restart API | Distributed epochs, partition migration and recovery coordination, backup/retention policy and real external source/sink delivery contracts |
@@ -241,3 +241,42 @@ or runtime dependencies, then executed the same SQLite example successfully.
 These are local checks, not a claim that this increment's full Linux suite or
 remote CI has run. Distributed execution, multi-source event-time joins/windows,
 external transactional sinks and remaining whole-reference gaps stay open.
+
+## Incremental keyed join increment
+
+From signed baseline `7eddc92451d4aafc021e225801b6a6e5db7ce2b6`, the separate
+`KeyedJoin`/`JoinRuntime` implements original local tagged-side processing with
+first/last/product insertion and complete/final/running emission. It retains
+actual keyed state between arrivals, preserves duplicate product combinations,
+distinguishes absent sides from JSON null, and supports explicit per-side EOF
+plus sorted, whole-key final draining across portable checkpoint restarts.
+It does not wrap the existing offline time-tolerance join.
+
+The [precise contract](keyed-joins.md) describes incremental canonical cell-byte
+admission, product-count/projected-output preflight, single-operation rollback,
+separate record-conversion limits and counter consistency without authentication.
+The 168 focused cases passed on Windows Python 3.12.13 in 21.88 s, with 100%
+statement/branch coverage in the new module (489 statements, 204 branches),
+and also passed on Python 3.14.5 in 7.11 s.
+They include independent nine-mode/manual/seeded oracles, every-boundary
+checkpoint restore, malformed/cyclic/oversized state, exact UTF-8 projections,
+pre-materialization resource failures, publication/control rollback and source
+ownership. Three review-driven groups of eight, nine and four mode-counter
+cases first failed against the preceding implementation, then passed after
+rejecting impossible counter histories. Lifetime retention, post-EOF consumed
+value bounds and legitimate complete-cycle/overwrite histories are also checked;
+these are necessary consistency constraints, not authenticated history proofs.
+
+The final Windows Python 3.12.13 whole-suite gate passed 1,003 tests in
+209.44 s, with one existing Python-3.13+-only generator-close test skipped;
+combined statement/branch coverage was 97.16%, above the unchanged 95% gate.
+Both native-coroutine and resource warnings were treated as errors. Ruff lint
+and format (68 files), strict Mypy (24 modules), Bandit, lock verification
+(61 packages), and `git diff --check` passed.
+
+The offline `examples/keyed_join.py` writes and reloads actual temporary snapshot
+files before continued input and after partial drain, checking four manually
+specified rows and per-side counts `(3, 3, 2)`. Those example writes are not a
+production atomic source/state/output transaction. Multi-source graph/journal
+integration, broker-offset ownership, event-time windows, distributed joins and
+the other full-reference rows remain open.

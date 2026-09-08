@@ -16,6 +16,11 @@ offline restart/replay; no automatic retry or external exactly-once claim.
 Keyed [`stateful_flat_map`](docs/stateful-expansion.md) callbacks can atomically
 replace or delete state and emit zero-to-many ordered values in either runtime,
 including durable linear and graph journal recovery.
+The separate [incremental keyed join](docs/keyed-joins.md) accepts tagged side
+arrivals with first/last/product and complete/final/running modes, explicit EOF,
+bounded final draining and strict portable snapshots. Run
+`python examples/keyed_join.py` for a three-side checkpoint/restart example;
+this local runtime does not imply multi-source DAG or journal transactions.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 
