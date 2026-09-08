@@ -35,6 +35,7 @@ assert runtime.process(FlowRecord({"account": "a", "amount": 3}))[0].value == 5
 | `key_by` | `function(value) -> str` | Set an exact canonical nonempty key, preserve original value |
 | `drop_key` | No callback | Remove key, preserve value |
 | `stateful_map` | `function(value, state) -> StateUpdate`; `initial() -> JSON` | Per-step/per-key state with explicit emit/retain choices |
+| `stateful_flat_map` | `function(value, state) -> StateFlatUpdate`; `initial() -> JSON` | Per-key state plus ordered zero-to-many outputs, with explicit deletion |
 
 Keys are whitespace-trimmed Unicode scalar strings without control characters.
 Noncanonical keys are rejected rather than silently merged after normalization.
@@ -48,6 +49,12 @@ valid JSON state value; `retain=False` deletes state. `emit=False` suppresses an
 output without undoing the proposed state update. Input and retained state are
 isolated JSON snapshots, and `record.value` returns a fresh copy. JSON numeric
 values must be finite; integers stay within the interoperable safe range.
+
+[`StateFlatUpdate(state, outputs, retain=True)`](stateful-expansion.md) extends
+the same state contract to an iterable of outputs. The proposed state is captured
+before entering that iterable; subsequent generator mutations cannot alter it.
+An empty iterable still commits a valid state proposal. Each yielded value is
+independently snapshotted and passes the existing output budgets.
 
 ## Atomicity and backpressure
 
@@ -114,5 +121,6 @@ itself remains in-memory. The existing `RecoveryStore` and `resume` CLI remain
 specific to `WatermarkAligner`; they do not implicitly commit this flow's state
 or outputs. The separate [GraphDataflow API](branching-dataflows.md) adds bounded
 branch/merge topology with one internal transaction across siblings; its new
-checkpoint kind is not yet supported by FlowJournal. Notifications, general
-window operators, partitioned connectors and distributed execution remain open.
+checkpoint kind is separate from FlowJournal and is durably recovered through
+[GraphJournal](graph-journal.md). Notifications, general window operators,
+partitioned connectors and distributed execution remain open.

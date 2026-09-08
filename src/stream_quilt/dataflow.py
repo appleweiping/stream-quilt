@@ -10,14 +10,18 @@ import hashlib
 import inspect
 import json
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
 from .errors import ValidationError
 from .models import _freeze_event_data, _label, _thaw_json
 
-Operator = Literal["map", "filter", "flat_map", "key_by", "drop_key", "stateful_map"]
-_OPERATORS = {"map", "filter", "flat_map", "key_by", "drop_key", "stateful_map"}
+Operator = Literal[
+    "map", "filter", "flat_map", "key_by", "drop_key", "stateful_map", "stateful_flat_map"
+]
+_STATEFUL = {"stateful_map", "stateful_flat_map"}
+_OPERATORS = {"map", "filter", "flat_map", "key_by", "drop_key"} | _STATEFUL
 _REMOVED = object()
 _MAX_COUNT = 2**53 - 1
 
@@ -109,6 +113,24 @@ class StateUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class StateFlatUpdate:
+    """Replace/delete keyed state and emit ordered zero-to-many JSON values.
+
+    State is snapshotted before output iteration, so a generator cannot change
+    its proposed state by later mutating that object. Native output generators
+    are closed on success or failure; other iterator resources remain caller-owned.
+    """
+
+    state: Any
+    outputs: Iterable[Any]
+    retain: bool = True
+
+    def __post_init__(self) -> None:
+        if type(self.retain) is not bool:
+            raise ValidationError("state expansion retain must be boolean")
+
+
+@dataclass(frozen=True, slots=True)
 class FlowStep:
     step_id: str
     operator: Operator
@@ -124,10 +146,10 @@ class FlowStep:
                 raise ValidationError("drop_key does not accept a callback")
         else:
             _sync(self.function, "step function")
-        if self.operator == "stateful_map":
+        if self.operator in _STATEFUL:
             _sync(self.initial, "state initializer")
         elif self.initial is not None:
-            raise ValidationError("only stateful_map accepts an initializer")
+            raise ValidationError("only stateful operators accept an initializer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +326,61 @@ class FlowCheckpoint:
         )
 
 
+def _no_awaitable(value: Any) -> None:
+    if inspect.isawaitable(value):
+        if inspect.iscoroutine(value):
+            value.close()
+        raise ValidationError("dataflow values and iteration must be synchronous")
+
+
+@contextmanager
+def _flat_values(values: Any) -> Iterator[Callable[[], Iterator[Any]]]:
+    """Own native generators while letting state snapshot precede iterable entry."""
+    iterator: Iterator[Any] | None = None
+    primary: BaseException | None = None
+
+    def open_iterator() -> Iterator[Any]:
+        nonlocal iterator
+        iterator = iter(values)
+        return iterator
+
+    try:
+        _no_awaitable(values)
+        if not isinstance(values, Iterable) or isinstance(values, (str, bytes, Mapping)):
+            raise ValidationError("flat_map must return an iterable of JSON values")
+        yield open_iterator
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        owner = iterator if inspect.isgenerator(iterator) else values
+        if inspect.isgenerator(owner):
+            try:
+                # Python 3.13+ can return the generator's return value here;
+                # earlier typing stubs describe only None. Inspect either case.
+                returned = cast(Callable[[], Any], owner.close)()
+                _no_awaitable(returned)
+            except Exception as cleanup:
+                if primary is None:
+                    raise
+                primary.add_note(f"output generator cleanup also failed: {type(cleanup).__name__}")
+
+
+def _emit_values(
+    iterator: Iterator[Any], emit: Callable[[Any, str | None], None], key: str | None
+) -> None:
+    while True:
+        try:
+            value = next(iterator)
+        except StopIteration as end:
+            # A generator return value is not an output. Reject/close a known
+            # misplaced coroutine rather than dropping it with the sentinel.
+            _no_awaitable(end.value)
+            return
+        _no_awaitable(value)
+        emit(value, key)
+
+
 class _FlowTransaction:
     """One staged state/callback budget shared by linear and graph schedulers."""
 
@@ -327,6 +404,19 @@ class _FlowTransaction:
                 value.close()
             raise ValidationError("dataflow callbacks must not return awaitables")
         return value
+
+    def _propose(self, key: tuple[str, str], previous: object, state: Any, retain: bool) -> None:
+        replacement = _snapshot(state, self.limits.max_state_value_bytes) if retain else _REMOVED
+        self.projected_keys += (replacement is not _REMOVED) - (previous is not _REMOVED)
+        self.projected_bytes += (
+            len(str(replacement).encode()) if replacement is not _REMOVED else 0
+        ) - (len(str(previous).encode()) if previous is not _REMOVED else 0)
+        if (
+            self.projected_keys > self.limits.max_state_keys
+            or self.projected_bytes > self.limits.max_state_bytes
+        ):
+            raise ValidationError("dataflow keyed state capacity exceeded")
+        self.pending[key] = replacement
 
     def apply(
         self,
@@ -358,9 +448,9 @@ class _FlowTransaction:
                 if step.operator == "drop_key":
                     emit(item.value, None)
                     continue
-                if step.operator == "stateful_map":
+                if step.operator in _STATEFUL:
                     if item.key is None:
-                        raise ValidationError("stateful_map requires keyed records")
+                        raise ValidationError("stateful operators require keyed records")
                     state_key = (step.step_id, item.key)
                     previous = self.pending.get(state_key, self.state.get(state_key, _REMOVED))
                     state = (
@@ -370,26 +460,18 @@ class _FlowTransaction:
                     )
                     state = json.loads(_snapshot(state, limits.max_state_value_bytes))
                     update = self.invoke(function, item.value, state)
+                    if step.operator == "stateful_flat_map":
+                        if type(update) is not StateFlatUpdate:
+                            raise ValidationError("stateful expansion must return StateFlatUpdate")
+                        with _flat_values(update.outputs) as open_iterator:
+                            update.__post_init__()
+                            self._propose(state_key, previous, update.state, update.retain)
+                            _emit_values(open_iterator(), emit, item.key)
+                        continue
                     if type(update) is not StateUpdate:
                         raise ValidationError("stateful callback must return StateUpdate")
                     update.__post_init__()
-                    replacement = (
-                        _snapshot(update.state, limits.max_state_value_bytes)
-                        if update.retain
-                        else _REMOVED
-                    )
-                    self.projected_keys += (replacement is not _REMOVED) - (
-                        previous is not _REMOVED
-                    )
-                    self.projected_bytes += (
-                        len(str(replacement).encode()) if replacement is not _REMOVED else 0
-                    ) - (len(str(previous).encode()) if previous is not _REMOVED else 0)
-                    if (
-                        self.projected_keys > limits.max_state_keys
-                        or self.projected_bytes > limits.max_state_bytes
-                    ):
-                        raise ValidationError("dataflow keyed state capacity exceeded")
-                    self.pending[state_key] = replacement
+                    self._propose(state_key, previous, update.state, update.retain)
                     if update.emit:
                         emit(update.output, item.key)
                     continue
@@ -404,27 +486,8 @@ class _FlowTransaction:
                     if result:
                         emit(item.value, item.key)
                 else:
-                    if not isinstance(result, Iterable) or isinstance(
-                        result, (str, bytes, Mapping)
-                    ):
-                        raise ValidationError("flat_map must return an iterable of JSON values")
-                    iterator = iter(result)
-                    primary: BaseException | None = None
-                    try:
-                        for value in iterator:
-                            emit(value, item.key)
-                    except BaseException as error:
-                        primary = error
-                        raise
-                    finally:
-                        if inspect.isgenerator(iterator):
-                            try:
-                                iterator.close()
-                            except Exception:
-                                # A generator's ordinary cleanup failure must
-                                # not replace a consumer control exception.
-                                if primary is None:
-                                    raise
+                    with _flat_values(result) as open_iterator:
+                        _emit_values(open_iterator(), emit, item.key)
         except Exception:
             raise FlowExecutionError(step.step_id) from None
         return tuple(output)
@@ -478,7 +541,7 @@ class FlowRuntime:
         checked = FlowCheckpoint.from_dict(checkpoint.to_dict())
         if checked.identity != flow.identity:
             raise ValidationError("dataflow identity/revision/configuration mismatch")
-        stateful = {step.step_id for step in flow.steps if step.operator == "stateful_map"}
+        stateful = {step.step_id for step in flow.steps if step.operator in _STATEFUL}
         for step, key, value in checked.cells:
             if step not in stateful or len(value.encode()) > flow.limits.max_state_value_bytes:
                 raise ValidationError("checkpoint state is incompatible with the flow")
@@ -552,5 +615,6 @@ __all__ = [
     "FlowRecord",
     "FlowRuntime",
     "FlowStep",
+    "StateFlatUpdate",
     "StateUpdate",
 ]

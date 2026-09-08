@@ -13,7 +13,7 @@ linear and bounded DAG operator runtimes. It does not implement a distributed da
 |---|---|---|
 | `dataflow.py`, typed stream/operator graph | Validated bounded linear and acyclic branching graphs over isolated JSON records; explicit semantic revision and topology inspection | Typed edges, multi-source graphs and multi-worker lifecycle |
 | `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, fanout, strict boolean branching and edge-ordered merge; bounded expansion and pull-based source consumption | General batches and full cross-operator reference conformance |
-| `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map, explicit deletion/emission, per-input rollback and strict portable snapshots | Stateful flat-map/batch, notifications, EOF handling and partition ownership |
+| `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map and stateful_flat_map, explicit deletion/emission, ordered expansion, per-input rollback and strict portable snapshots | Stateful batch, notifications, EOF handling and partition ownership |
 | Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams` | Incremental keyed joins, final aggregation and collection contracts; cache expiration and enrichment error handling |
 | `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation | General window logic/aggregation, processing-time clocks, idle notification, mergeable state and window metadata streams |
 | `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers; aligner/general-flow local transactional SQLite sinks | Source/sink partition protocols, external broker offsets, connector cancellation/retry, Kafka serde and broker integration verification |
@@ -202,3 +202,42 @@ retention/compaction, typed edges and other open capability rows remain open.
 These final runs are distinct from the failed pre-correction runs above. They
 are local correctness evidence, not remote CI results, performance parity with
 the whole reference repository, or external-effect durability certification.
+
+## Transactional stateful expansion increment
+
+From baseline `5dbb4c4`, `stateful_flat_map` extends the shared operator engine
+with an explicit `StateFlatUpdate(state, outputs, retain=True)` decision.
+Zero output still commits the proposed state; retained JSON null is distinct
+from deletion. Both the linear and graph schedulers defer all per-input state
+and output publication until expansion and every downstream sibling succeeds.
+The existing SQLite journals restore the new operator kind without a new wire
+version or a second SQL implementation. See [the exact contract](stateful-expansion.md).
+
+The 58 new cases cover independent keyed totals, repeated keys within one input,
+empty output, deletion/reinitialization, state/output/record limits, late-sibling
+rollback and actual SQLite recovery. Iteration setup is inside the proposal's
+rollback boundary: a custom `__iter__` that mutates its proposed state and then
+fails cannot leak that state. Native generator cleanup preserves primary control
+exceptions and rejects/closes known coroutine outputs, including return values
+from `generator.close()` on Python 3.13+. Arbitrary user-defined resource and
+iterator protocols remain caller-owned, not automatically guessed or closed.
+
+Final Windows/Python 3.12.13 full-suite verification passed **835 tests**, with
+**one Python-3.13+-specific skip**, in 378.29 s. Combined statement/branch
+coverage was **96.74%**, with **98.29%** in `dataflow.py` and **100%** in
+`branching.py` and `graph_journal.py`; the 95% gate is unchanged. All **58** new
+cases subsequently passed on Python **3.14.5**, including that version-specific
+generator cleanup case. Runtime and resource warnings were errors. An independent
+read-only review passed 164 seeded checks spanning both schedulers, repeated
+same-key records, rejected inputs, snapshot restarts and real SQLite batch
+rollback. The executable example recovered outputs `[[2, 3], 5]` at source
+positions `[2, 2]`.
+
+Ruff lint/format, strict Mypy (23 source modules), Bandit, frozen-lock checking,
+wheel/sdist builds, strict Twine metadata and wheel-content checks passed. An
+isolated Python 3.14.5 environment installed only the built wheel with no index
+or runtime dependencies, then executed the same SQLite example successfully.
+
+These are local checks, not a claim that this increment's full Linux suite or
+remote CI has run. Distributed execution, multi-source event-time joins/windows,
+external transactional sinks and remaining whole-reference gaps stay open.

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `StateFlatUpdate` and `stateful_flat_map` add atomic keyed zero-to-many output
+  to the shared linear/graph execution engine, portable checkpoints and both
+  local journals. State is snapshotted before output iteration; bounded native
+  generator cleanup and malformed-coroutine rejection also cover `flat_map`.
 - `GraphJournal`, `GraphRecoveryPoint` and `GraphJournalOutput` add atomic local
   DAG source/state/terminal-output recovery using the existing shared SQLite
   engine. Separate graph IDs/kinds, topology binding and terminal ordering preserve
