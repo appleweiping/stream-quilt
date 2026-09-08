@@ -2,11 +2,20 @@
 
 ## Unreleased
 
+- `GraphJournal`, `GraphRecoveryPoint` and `GraphJournalOutput` add atomic local
+  DAG source/state/terminal-output recovery using the existing shared SQLite
+  engine. Separate graph IDs/kinds, topology binding and terminal ordering preserve
+  linear database compatibility. A generated offline example and crash, race,
+  corruption and frozen-linear-wire regressions exercise actual storage behavior.
+- Journal output pages validate a bounded predecessor across page boundaries.
+  Ambiguous COMMIT/cleanup failures instruct callers to inspect the stored prefix
+  before replay; genuine control exceptions survive ordinary cleanup errors.
+
 - Bounded acyclic operator graphs add fanout, strict conditional routing and
   deterministic edge-ordered merges. Graph execution shares the linear operator
   transaction engine, with whole-graph work/state budgets and atomic per-input
   sibling publication. Separate portable graph checkpoints bind topology and
-  revision; durable graph journal integration remains explicitly open.
+  revision; separately identified graph journals now supply durable local recovery.
 - Local composable operators execute map/filter/flat-map/keying callbacks and
   isolated keyed state, with per-input rollback, bounded expansion and pull
   backpressure. Portable state checkpoints bind explicit semantic revisions;
