@@ -38,6 +38,13 @@ publishes only after every shard and the global budgets pass. Run
 `python examples/local_partitioned_totals.py` for actual worker PIDs, ordered
 outputs and a portable-checkpoint restart. This does not parallelize multi-source
 graphs or supply durable distributed recovery.
+[`PartitionedFlowJournal`](docs/partitioned-flow-journal.md) now persists each
+local worker wave's original source position, all shard state, outputs and a
+request receipt in one parent SQLite transaction. Retained receipts resolve a
+lost commit acknowledgement, and detached cursors read a fixed output prefix.
+Run `python examples/durable_partitioned_totals.py` for a real-worker SQLite
+restart and independently calculated keyed totals. Callback execution and
+external effects remain outside publication idempotency.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 

@@ -67,6 +67,30 @@ remain broader than this implementation. No whole-reference completion is claime
 
 ## Recovery increment evidence
 
+The separate [durable local worker journal](partitioned-flow-journal.md) now
+publishes a complete local partitioned Flow candidate through one parent-owned
+SQLite transaction. It retains original-position requests and commit receipts,
+supports explicit unknown-commit reconciliation, and returns bounded output
+pages anchored to a fixed generation. Historical receipt selection validates
+both adjacent boundaries, while page predecessors validate source/ordinal/key
+continuity. Real process tests cover concurrent two-PID dispatch, SQLite reopen,
+silent state updates and expansion, worker death/control/callback failure and
+parent death at each SQL publication boundary. The parent-death tests use a
+transport stub inside the dying parent and do not count as worker parallelism
+evidence. These are bounded local durability semantics; distributed epochs,
+rescaling and external source/sink delivery remain open.
+
+The local journal increment passed 1,668 full tests on Windows Python 3.12.13,
+with one existing Python-version skip, in 293.18 seconds. Combined coverage was
+96.9367061586% under the unchanged 95% gate. That full run used the final
+production files. A later test-only change explicitly closed test-owned SQLite
+connections; all 143 new cases then passed Python 3.14.5 with warnings as errors,
+and the affected 71 cases passed Python 3.12.13 again. The prior full result is
+not an exact final all-file-tree run; hosted exact-head verification is separate.
+The installed-wheel example uses two actual worker sessions and independently
+calculated keyed totals. These results do not establish reference-scale
+throughput, distributed durability or whole-reference completion.
+
 `tests/test_recovery.py` independently compares restarted processing with an
 uninterrupted source, checks cursor monotonicity, executes separate-process
 restart and pre-commit crash tests, races writers, injects a partially inserted

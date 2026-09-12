@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `PartitionedFlowJournal` adds atomic parent-owned SQLite publication over real
+  local worker candidates. Immutable requests, retained receipts and fixed-prefix
+  output pages support explicit replay/reopen and unknown-commit recovery.
+  Per-wave state, output and resource admission precedes publication; worker,
+  SQL and control failures preserve one cleanup owner and durable authority.
+  This does not implement broker/sink transactions or distributed epochs.
 - `LocalPartitionedFlow` runs bounded keyed linear flows in actual spawn workers,
   with global admission, ordered outputs, portable shard checkpoints and one
   parent publication point. Failure/cancellation does not publish partial waves
