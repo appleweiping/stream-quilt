@@ -33,3 +33,12 @@ checkpoints use strict bounded JSON, not pickle. Callbacks can access the host,
 allocate memory and spawn descendants; this is not an OS sandbox. Force-stopping
 owned workers neither guarantees callback `finally` execution nor kills their
 descendants. See [worker lifecycle and limits](docs/local-partitioned-flow.md).
+
+`PartitionedFlowJournal` retains that trusted-worker boundary and adds local
+SQLite source/state/output transactions with bounded request, row, page and
+retained-storage admission. Its hashes detect corruption; they do not authenticate
+writers or prevent a valid older database from being substituted. Idempotent
+receipt publication does not make callback effects exactly-once. Read the
+[durable worker journal contract](docs/partitioned-flow-journal.md) before
+interpreting cancellation, ambiguous COMMIT errors or output cursors as delivery
+acknowledgements.

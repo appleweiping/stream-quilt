@@ -82,6 +82,15 @@ from stream_quilt.partitioned_flow import (
     PartitionedFlowCheckpoint,
     PartitionedFlowOutput,
 )
+from stream_quilt.partitioned_journal import PartitionedFlowJournal, PartitionedFlowSession
+from stream_quilt.partitioned_journal_types import (
+    PartitionedFlowReceipt,
+    PartitionedFlowRecoveryPoint,
+    PartitionedFlowRequest,
+    PartitionedJournalOutput,
+    PartitionedOutputCursor,
+    PartitionedOutputPage,
+)
 from stream_quilt.recovery import RecoveryConflict, RecoveryPoint, RecoveryStore, resume_events
 from stream_quilt.sessions import SessionResult, SessionWindow, sessionize
 
@@ -154,7 +163,15 @@ __all__ = [
     "PartitionedEvents",
     "PartitionedFlowBatch",
     "PartitionedFlowCheckpoint",
+    "PartitionedFlowJournal",
     "PartitionedFlowOutput",
+    "PartitionedFlowReceipt",
+    "PartitionedFlowRecoveryPoint",
+    "PartitionedFlowRequest",
+    "PartitionedFlowSession",
+    "PartitionedJournalOutput",
+    "PartitionedOutputCursor",
+    "PartitionedOutputPage",
     "RecoveryConflict",
     "RecoveryPoint",
     "RecoveryStore",

@@ -6,6 +6,7 @@ test_partitioned_flow; these tests never claim their in-process stub is parallel
 
 import inspect
 import threading
+import time
 from dataclasses import replace
 
 import pytest
@@ -48,6 +49,22 @@ def test_pull_limit_is_not_eof_and_does_not_pull_extra_input(transport):
         assert len(batches) == 2 and not runtime.checkpoint().source_closed
         assert next(iterator).value == 2
         iterator.close()
+
+
+def test_detached_candidate_does_not_publish_and_accepts_explicit_parent_snapshot(transport):
+    with LocalPartitionedFlow(transport, "source", "a" * 64) as runtime:
+        original = runtime.checkpoint()
+        with runtime._operation():
+            one = runtime._candidate_batch(
+                original, 0, (FlowRecord(1, "a"),), time.monotonic() + 30
+            )
+            two = runtime._candidate_batch(
+                one.checkpoint, 1, (FlowRecord(2, "b"),), time.monotonic() + 30
+            )
+        assert runtime.checkpoint() is original
+        assert one.checkpoint.next_position == 1 and two.checkpoint.next_position == 2
+        assert [row.record.value for row in one.outputs + two.outputs] == ["1", "2"]
+        assert runtime.process_batch(0, (FlowRecord(4, "a"),)).checkpoint.next_position == 1
 
 
 def test_observed_eof_empty_source_and_repeated_close_are_not_synthetic_inputs(transport):

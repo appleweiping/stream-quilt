@@ -247,156 +247,170 @@ class LocalPartitionedFlow:
         self, start_position: int, records: tuple[FlowRecord, ...], lease: object | None = None
     ) -> PartitionedFlowBatch:
         with self._operation(lease):
-            before = self._point
             deadline = time.monotonic() + self.limits.wave_timeout
-            _count(start_position, "source position", 0, _MAX_COUNT)
-            if start_position != before.next_position or before.source_closed:
-                raise ValidationError("source position must match the next open position")
-            if type(records) is not tuple or not 1 <= len(records) <= self.limits.max_batch_inputs:
-                raise ValidationError("records must be a nonempty bounded tuple")
-            _count(start_position + len(records), "source next position", 0, _MAX_COUNT)
-            if (
-                len(records) * self.flow.limits.max_calls_per_input
-                > self.limits.max_callback_reservation
-            ):
-                raise ValidationError("global callback reservation exceeded")
-            groups: dict[int, list[dict[str, Any]]] = {}
-            input_bytes = 0
-            expected: dict[int, str] = {}
-            for position, record in enumerate(records, start_position):
-                if type(record) is not FlowRecord or record.key is None:
-                    raise ValidationError("partitioned input must be keyed FlowRecord")
-                # Revalidate a potentially forged exact-type public object at the boundary.
-                copied = _copy_record(record)
-                key = cast(str, copied.key)  # _copy_record already rejected absent keys.
-                wire = {"position": position, "record": copied.to_dict()}
-                input_bytes += len(_json(wire, self.limits.max_input_bytes).encode("utf-8"))
-                if input_bytes > self.limits.max_input_bytes:
-                    raise ValidationError("global input wire exceeded")
-                groups.setdefault(self.partition_for(key), []).append(wire)
-                expected[position] = key
-            quotas = {
-                index: min(
-                    self.limits.max_message_bytes, self.limits.max_result_bytes // len(groups)
-                )
-                for index in groups
-            }
-            requests = {}
-            request_bytes = 0
-            for index, items in groups.items():
-                payload = _json(
-                    {
-                        "session": self._session,
-                        "wave": before.waves + 1,
-                        "worker": index,
-                        "checkpoint": _shard_wire(before.shards[index]),
-                        "items": items,
-                        "reply_limit": quotas[index],
-                    },
-                    self.limits.max_message_bytes,
-                ).encode("utf-8")
-                request_bytes += len(payload)
-                if request_bytes > self.limits.max_checkpoint_bytes + self.limits.max_input_bytes:
-                    raise ValidationError("aggregate request wire exceeded")
-                requests[index] = payload
+            batch = self._candidate_batch(self._point, start_position, records, deadline)
             pool = self._pool
             if pool is None:
                 raise LocalWorkerError("session_contract")
             try:
-                pool.check(deadline)
-                pool.check_alive()
-                responses = pool.execute(requests, quotas, deadline)
-                shards = list(before.shards)
-                rows: list[tuple[int, int, FlowRecord]] = []
-                output_bytes = 0
-                for index, raw in responses.items():
-                    message = _load(raw, quotas[index])
-                    if type(message) is dict and message.get("status") == "error":
-                        _shape(message, {"status", "worker", "session", "reason"})
-                        _count(message["worker"], "worker", 0, self.workers - 1)
-                        if (
-                            message["worker"] != index
-                            or message["session"] != self._session
-                            or message["reason"] not in {"callback", "control", "contract"}
-                        ):
-                            raise LocalWorkerError("response_contract", index)
-                        raise LocalWorkerError(message["reason"], index)
-                    _shape(
-                        message, {"status", "session", "wave", "worker", "checkpoint", "outputs"}
-                    )
-                    _count(message["worker"], "worker", 0, self.workers - 1)
-                    _count(message["wave"], "wave", 1, _MAX_COUNT)
-                    if (
-                        message["status"],
-                        message["session"],
-                        message["wave"],
-                        message["worker"],
-                    ) != ("ok", self._session, before.waves + 1, index):
-                        raise LocalWorkerError("response_contract", index)
-                    emitted = message["outputs"]
-                    if (
-                        type(emitted) is not list
-                        or len(rows) + len(emitted) > self.limits.max_output_records
-                    ):
-                        raise LocalWorkerError("output_limit", index)
-                    positions = {item["position"] for item in groups[index]}
-                    previous = (-1, -1)
-                    for item in emitted:
-                        _shape(item, {"position", "ordinal", "record"})
-                        position = _count(item["position"], "output position", 0, _MAX_COUNT)
-                        ordinal = _count(item["ordinal"], "output ordinal", 0, _MAX_COUNT)
-                        pair = (position, ordinal)
-                        if (
-                            position not in positions
-                            or pair <= previous
-                            or ordinal != (previous[1] + 1 if previous[0] == position else 0)
-                        ):
-                            raise LocalWorkerError("output_order", index)
-                        record = _record(item["record"])
-                        if (
-                            record.key != expected[position]
-                            or record.byte_size > self.flow.limits.max_record_bytes
-                        ):
-                            raise LocalWorkerError("output_contract", index)
-                        output_bytes += len(
-                            _json(item, self.limits.max_output_bytes).encode("utf-8")
-                        )
-                        if output_bytes > self.limits.max_output_bytes:
-                            raise LocalWorkerError("output_limit", index)
-                        rows.append((position, ordinal, record))
-                        previous = pair
-                    shard = _shard_load(message["checkpoint"], self.limits)
-                    if shard.processed_inputs != before.shards[index].processed_inputs + len(
-                        groups[index]
-                    ) or shard.emitted_records != before.shards[index].emitted_records + len(
-                        emitted
-                    ):
-                        raise LocalWorkerError("shard_counts", index)
-                    shards[index] = shard
-                after = replace(
-                    before,
-                    next_position=start_position + len(records),
-                    waves=before.waves + 1,
-                    shards=tuple(shards),
-                )
-                after.validate_for(self.flow)
-                rows.sort(key=lambda row: (row[0], row[1]))
-                outputs = tuple(
-                    PartitionedFlowOutput(sequence, position, ordinal, record)
-                    for sequence, (position, ordinal, record) in enumerate(
-                        rows, before.emitted_records
-                    )
-                )
-                batch = PartitionedFlowBatch(start_position, outputs, after)
                 with self._publication:
                     pool.check(deadline)
                     pool.check_alive()
-                    self._point = after  # The only parent wave publication point.
+                    self._point = batch.checkpoint  # The only in-memory wave publication point.
                 return batch
             except BaseException as primary:
                 self._phase = "failed"
                 pool.cleanup(primary)
                 raise
+
+    def _candidate_batch(
+        self,
+        before: PartitionedFlowCheckpoint,
+        start_position: int,
+        records: tuple[FlowRecord, ...],
+        deadline: float,
+    ) -> PartitionedFlowBatch:
+        """Execute from an admitted parent snapshot without publishing it.
+
+        The private caller holds _operation and owns the final publication boundary.
+        This method neither reads nor changes _point; workers restore every wave.
+        """
+        _count(start_position, "source position", 0, _MAX_COUNT)
+        if start_position != before.next_position or before.source_closed:
+            raise ValidationError("source position must match the next open position")
+        if type(records) is not tuple or not 1 <= len(records) <= self.limits.max_batch_inputs:
+            raise ValidationError("records must be a nonempty bounded tuple")
+        _count(start_position + len(records), "source next position", 0, _MAX_COUNT)
+        if (
+            len(records) * self.flow.limits.max_calls_per_input
+            > self.limits.max_callback_reservation
+        ):
+            raise ValidationError("global callback reservation exceeded")
+        groups: dict[int, list[dict[str, Any]]] = {}
+        input_bytes = 0
+        expected: dict[int, str] = {}
+        for position, record in enumerate(records, start_position):
+            if type(record) is not FlowRecord or record.key is None:
+                raise ValidationError("partitioned input must be keyed FlowRecord")
+            # Revalidate a potentially forged exact-type public object at the boundary.
+            copied = _copy_record(record)
+            key = cast(str, copied.key)  # _copy_record already rejected absent keys.
+            wire = {"position": position, "record": copied.to_dict()}
+            input_bytes += len(_json(wire, self.limits.max_input_bytes).encode("utf-8"))
+            if input_bytes > self.limits.max_input_bytes:
+                raise ValidationError("global input wire exceeded")
+            groups.setdefault(self.partition_for(key), []).append(wire)
+            expected[position] = key
+        quotas = {
+            index: min(self.limits.max_message_bytes, self.limits.max_result_bytes // len(groups))
+            for index in groups
+        }
+        requests = {}
+        request_bytes = 0
+        for index, items in groups.items():
+            payload = _json(
+                {
+                    "session": self._session,
+                    "wave": before.waves + 1,
+                    "worker": index,
+                    "checkpoint": _shard_wire(before.shards[index]),
+                    "items": items,
+                    "reply_limit": quotas[index],
+                },
+                self.limits.max_message_bytes,
+            ).encode("utf-8")
+            request_bytes += len(payload)
+            if request_bytes > self.limits.max_checkpoint_bytes + self.limits.max_input_bytes:
+                raise ValidationError("aggregate request wire exceeded")
+            requests[index] = payload
+        pool = self._pool
+        if pool is None:
+            raise LocalWorkerError("session_contract")
+        try:
+            pool.check(deadline)
+            pool.check_alive()
+            responses = pool.execute(requests, quotas, deadline)
+            shards = list(before.shards)
+            rows: list[tuple[int, int, FlowRecord]] = []
+            output_bytes = 0
+            for index, raw in responses.items():
+                message = _load(raw, quotas[index])
+                if type(message) is dict and message.get("status") == "error":
+                    _shape(message, {"status", "worker", "session", "reason"})
+                    _count(message["worker"], "worker", 0, self.workers - 1)
+                    if (
+                        message["worker"] != index
+                        or message["session"] != self._session
+                        or message["reason"] not in {"callback", "control", "contract"}
+                    ):
+                        raise LocalWorkerError("response_contract", index)
+                    raise LocalWorkerError(message["reason"], index)
+                _shape(message, {"status", "session", "wave", "worker", "checkpoint", "outputs"})
+                _count(message["worker"], "worker", 0, self.workers - 1)
+                _count(message["wave"], "wave", 1, _MAX_COUNT)
+                if (
+                    message["status"],
+                    message["session"],
+                    message["wave"],
+                    message["worker"],
+                ) != ("ok", self._session, before.waves + 1, index):
+                    raise LocalWorkerError("response_contract", index)
+                emitted = message["outputs"]
+                if (
+                    type(emitted) is not list
+                    or len(rows) + len(emitted) > self.limits.max_output_records
+                ):
+                    raise LocalWorkerError("output_limit", index)
+                positions = {item["position"] for item in groups[index]}
+                previous = (-1, -1)
+                for item in emitted:
+                    _shape(item, {"position", "ordinal", "record"})
+                    position = _count(item["position"], "output position", 0, _MAX_COUNT)
+                    ordinal = _count(item["ordinal"], "output ordinal", 0, _MAX_COUNT)
+                    pair = (position, ordinal)
+                    if (
+                        position not in positions
+                        or pair <= previous
+                        or ordinal != (previous[1] + 1 if previous[0] == position else 0)
+                    ):
+                        raise LocalWorkerError("output_order", index)
+                    record = _record(item["record"])
+                    if (
+                        record.key != expected[position]
+                        or record.byte_size > self.flow.limits.max_record_bytes
+                    ):
+                        raise LocalWorkerError("output_contract", index)
+                    output_bytes += len(_json(item, self.limits.max_output_bytes).encode("utf-8"))
+                    if output_bytes > self.limits.max_output_bytes:
+                        raise LocalWorkerError("output_limit", index)
+                    rows.append((position, ordinal, record))
+                    previous = pair
+                shard = _shard_load(message["checkpoint"], self.limits)
+                if shard.processed_inputs != before.shards[index].processed_inputs + len(
+                    groups[index]
+                ) or shard.emitted_records != before.shards[index].emitted_records + len(emitted):
+                    raise LocalWorkerError("shard_counts", index)
+                shards[index] = shard
+            after = replace(
+                before,
+                next_position=start_position + len(records),
+                waves=before.waves + 1,
+                shards=tuple(shards),
+            )
+            after.validate_for(self.flow)
+            rows.sort(key=lambda row: (row[0], row[1]))
+            outputs = tuple(
+                PartitionedFlowOutput(sequence, position, ordinal, record)
+                for sequence, (position, ordinal, record) in enumerate(rows, before.emitted_records)
+            )
+            batch = PartitionedFlowBatch(start_position, outputs, after)
+            pool.check(deadline)
+            pool.check_alive()
+            return batch
+        except BaseException as primary:
+            self._phase = "failed"
+            pool.cleanup(primary)
+            raise
 
     def close_source(self, next_position: int) -> PartitionedFlowCheckpoint:
         return self._close_source(next_position)
