@@ -20,3 +20,19 @@ example using CloudEvents 1.0 structured JSON envelopes:
 stream-quilt align examples/cloudevents-config.json examples/cloudevents.jsonl \
   --input-format cloudevents --output cloudevents-output
 ```
+
+## Window folds with explicit progress and checkpoint files
+
+From an installed checkout, run:
+
+```bash
+python -I examples/window_folds.py
+```
+
+The [self-contained example](window_folds.py) folds out-of-order keyed arrivals,
+signals an explicit watermark, drains whole windows, drops an explicitly late
+record, and restores actual owned temporary checkpoint files before and during
+EOF drainage. It checks all five complete output rows and exact counters against
+handwritten expectations, then removes its temporary directory. These files are
+demonstration snapshots, not broker offsets, delivery acknowledgements, a durable
+journal or a process-crash guarantee. See [the contract](../docs/window-folds.md).

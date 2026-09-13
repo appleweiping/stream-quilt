@@ -14,8 +14,8 @@ linear and bounded DAG operator runtimes. It does not implement a distributed da
 | `dataflow.py`, typed stream/operator graph | Validated bounded linear, single-entry and explicit multi-source DAGs over isolated JSON records; shared operators, semantic revision and topology inspection; real spawn workers for the key-preserving single-source linear subset | Typed edges, multi-source/graph worker lifecycle and distributed progress |
 | `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, fanout, strict boolean branching and edge-ordered merge; bounded expansion and pull-based source consumption | General batches and full cross-operator reference conformance |
 | `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map and stateful_flat_map, explicit deletion/emission, ordered expansion, per-input rollback and strict portable snapshots | Stateful batch, notifications, EOF handling and partition ownership |
-| Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; incremental `JoinRuntime` and multi-source DAG join nodes with all nine insertion/emission combinations, explicit EOF and checkpointable final drain; local multi-source SQLite journal integration | Event-time join windows, final aggregation and collection contracts; cache expiration and enrichment error handling |
-| `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation | General window logic/aggregation, processing-time clocks, idle notification, mergeable state and window metadata streams |
+| Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; incremental `JoinRuntime` and multi-source DAG join nodes with all nine insertion/emission combinations, explicit EOF and checkpointable final drain; local multi-source SQLite journal integration; standalone fixed keyed-window folds | Event-time join windows, general final aggregation/collection contracts; cache expiration and enrichment error handling |
+| `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation; original arrival-ordered fixed-window folds with explicit integer watermarks, bounded partial drain and strict checkpoint resume | Timestamp-order buffering, session merging, system/event clock parity, general window logic/output streams, notification, CLI and graph/worker/journal integration |
 | `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers; aligner/general-flow local transactional SQLite sinks | Source/sink partition protocols, external broker offsets, connector cancellation/retry, Kafka serde and broker integration verification |
 | `recovery.py`, Rust recovery implementation | Strict aligner and keyed-flow snapshots, atomic offset/state/output SQLite transactions, CAS writer conflicts; aligner restart CLI and general-flow restart API | Distributed epochs, partition migration and recovery coordination, backup/retention policy and real external source/sink delivery contracts |
 | Rust `worker.rs`, `run.rs`, `timely.rs`, `operators.rs` | Actual bounded spawn execution of key-preserving linear Flow, deterministic ingress routing, parallel all-shard dispatch, ordered candidate collection, parent-authoritative checkpoints and owned worker/transport failure cleanup | Per-stage exchange, multi-source join co-location/execution, multi-node progress, durable distributed recovery, migration/rescaling and compiled hot paths |
@@ -31,6 +31,43 @@ and the [runtime source tree](https://github.com/bytewax/bytewax/tree/9fce5b6ee4
 No upstream implementation was copied into this project. API inventory is still
 not an exhaustive reviewed contract catalogue; each row needs finer-grained
 behavioral acceptance work before it can close.
+
+## Standalone explicit-watermark window-fold increment
+
+`WindowFoldRuntime` now retains original arrival-ordered state per key/fixed
+window, using exact safe-integer tick geometry, explicit watermarks, late
+reject/drop and accounted gaps. Permanent EOF and reserved whole-window partial
+drain are checkpointable. Every operation constructs its full state and return
+proposal before publication; a failing finalizer retains the entire selected
+batch. An invalid or non-returning finalizer has no unconditional progress
+guarantee. Read [the exact contract and limits](window-folds.md).
+
+The [offline executable example](../examples/window_folds.py) writes and closes
+four owned temporary checkpoint files, restores before and during explicit
+watermark/EOF drainage, and checks all five complete rows and counters against
+handwritten expectations. Its first A-window arrival list is `[2, 5]`, not
+timestamp-sorted `[5, 2]`. This demonstrates runtime reinstantiation from actual
+files, not atomic source/state/output storage, consumer acknowledgement or
+process-crash durability. There are no invented broker offsets.
+
+Core focused verification passed 548 tests across two runs on Windows Python
+3.12.13, with no failures/errors/skips and warnings as errors: 323 new runtime,
+checkpoint and independent enumeration/manual-oracle cases, plus 225 existing
+dataflow/keyed-join cases. The new module's source-scoped statement/branch
+coverage was 99.5568685377% under the unchanged 95% threshold, without exclusions.
+This is not a full-project coverage result. Full, other-platform/interpreter,
+packaged-artifact and hosted acceptance are separate gates, not inferred from
+these focused results.
+
+The frozen reference defaults to timestamp-order folding and rejects gapped
+sliding windows; this lane explicitly uses arrival order and treats accounted
+gaps as an original extension. The reference event clock includes elapsed
+system time; no such clock is inferred here. Timestamp-order buffering,
+sessions/merging, clocks/notifications, generalized window output streams,
+event-time joins, CLI, graph/worker/journal integration, external delivery and
+distributed progress/recovery remain OPEN. The explicit FlowRecord adapter does
+not close any of those integration contracts. Existing runtime and journal wires
+are unchanged; no whole-reference completion or performance parity is claimed.
 
 ## Local multi-worker linear increment
 
@@ -424,3 +461,35 @@ passed; all 14 changed source/test/doc/example files matched the final sdist
 byte-for-byte. Artifact verification is not inferred from a source-tree test run.
 Distributed delivery, authenticated history, external transactions, event-time
 windows, retention and the remaining whole-reference ledger stay open.
+
+## Explicit-watermark window-fold acceptance
+
+The standalone [window runtime](window-folds.md) now executes actual keyed,
+arrival-ordered fixed-window folds, overlapping/tumbling/gapped membership,
+explicit finite watermarks and permanent EOF, bounded whole-window drainage and
+strict portable checkpoint restoration. This does not imply graph/journal/worker
+integration, timestamp-order buffering, system clocks, sessions or distributed
+progress; those reference capabilities remain open.
+
+Final Windows CPython 3.12.13 full-suite verification passed **1991 tests**, with
+one existing Python-version skip for generator.close return values, in **640.22s**.
+Combined coverage was **97.11356623867822%** (7245/7403 statements and 2512/2644
+branches), above the unchanged 95% gate. ResourceWarning and RuntimeWarning were
+errors. All 79 source/test/configuration/workflow file hashes were unchanged
+across the run; documentation and the standalone example were finalized separately.
+The new module has 525/527 statements and 149/150 branches covered, with no new
+exclusions. All **323 new tests** independently passed CPython 3.14.5 in **77.47s**.
+
+The independent enumeration oracle retains raw arrival lists, tests half-open
+membership over a finite index domain, and reconstructs complete rows/checkpoint
+documents across every-operation restore. Separate tests exercise pre-callback
+admission, exact-byte quotas, late/drop/gap counters, exception/control ownership,
+callback reentry, immutable output and allocation-before-publication boundaries.
+
+The offline example makes four actual owned checkpoint-file restarts and checks
+five complete handwritten output rows, partial/final counters and terminal state.
+It passes isolated source execution both normally and with Python optimization;
+its checks remain active under -O. Whole-repository Ruff check/format (104 files),
+strict Mypy (34 modules), Bandit and the unchanged offline 52-package environment
+pass. Package, installed-wheel and exact-head hosted results require their own
+actual acceptance and are not inferred from these source tests.

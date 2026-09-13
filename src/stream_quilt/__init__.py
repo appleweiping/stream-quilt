@@ -93,6 +93,17 @@ from stream_quilt.partitioned_journal_types import (
 )
 from stream_quilt.recovery import RecoveryConflict, RecoveryPoint, RecoveryStore, resume_events
 from stream_quilt.sessions import SessionResult, SessionWindow, sessionize
+from stream_quilt.window_fold import (
+    WindowBatch,
+    WindowCheckpoint,
+    WindowFold,
+    WindowFoldExecutionError,
+    WindowFoldLimits,
+    WindowFoldRuntime,
+    WindowProcessResult,
+    WindowRow,
+    WindowStatus,
+)
 
 __all__ = [
     "AlignedWindow",
@@ -185,6 +196,15 @@ __all__ = [
     "TrackedCheckpoint",
     "ValidationError",
     "WatermarkAligner",
+    "WindowBatch",
+    "WindowCheckpoint",
+    "WindowFold",
+    "WindowFoldExecutionError",
+    "WindowFoldLimits",
+    "WindowFoldRuntime",
+    "WindowProcessResult",
+    "WindowRow",
+    "WindowStatus",
     "align_events",
     "benchmark_alignment",
     "cloudevent_from_dict",

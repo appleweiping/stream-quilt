@@ -46,6 +46,14 @@ Run `python examples/durable_partitioned_totals.py` for a real-worker SQLite
 restart and independently calculated keyed totals. Callback execution and
 external effects remain outside publication idempotency.
 
+The standalone [window-fold runtime](docs/window-folds.md) retains arrival-ordered
+fold state in fixed keyed windows, advances only through explicit integer-tick
+watermarks, and uses bounded whole-window draining with checkpointable pending
+closures and EOF. Run `python -I examples/window_folds.py` from an installed
+checkout for actual temporary checkpoint files and handwritten expected rows.
+This is not timestamp-order buffering, a system clock, a journal or distributed
+execution; window-fold CLI and graph/worker integration remain open.
+
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 
 [![CI](https://github.com/appleweiping/stream-quilt/actions/workflows/ci.yml/badge.svg)](https://github.com/appleweiping/stream-quilt/actions/workflows/ci.yml)
@@ -109,6 +117,8 @@ The checked-in image below is a screenshot of the actual generated
   validated portable state snapshots with explicit semantic revisions.
 - Bounded local DAG fanout, strict conditional branching and deterministic merge,
   with whole-graph work limits and one internal transaction across all siblings.
+- Standalone keyed arrival-order window folds with explicit integer watermarks,
+  isolated callbacks, reserved whole-window drain and strict portable restart.
 
 ## Installation
 

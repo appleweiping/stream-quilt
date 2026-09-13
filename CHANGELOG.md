@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- [WindowFoldRuntime](docs/window-folds.md) adds original fixed keyed-window folds
+  in arrival order, explicit integer-tick watermarks, late reject/drop, accounted
+  gaps and permanent EOF. Whole-window drain reserves bounded output before
+  finalizers and publishes complete state/results atomically. A separate strict
+  checkpoint and [offline example](examples/window_folds.py) support partial-drain
+  restart. Existing wires are unchanged; timestamp-order buffering, session
+  merging, clocks/notifications, CLI, graph/journal and distributed integration
+  remain open. Callback effects and external delivery are not transactional.
 - `PartitionedFlowJournal` adds atomic parent-owned SQLite publication over real
   local worker candidates. Immutable requests, retained receipts and fixed-prefix
   output pages support explicit replay/reopen and unknown-commit recovery.
