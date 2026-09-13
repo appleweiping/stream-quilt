@@ -270,8 +270,14 @@ operation. Separate tests exercise pre-callback admission, reserved drainage,
 container isolation, hostile wire, control failures and allocation/publication
 boundaries. Source test evidence is not packaged or full-suite evidence.
 
+The separate [window graph runtime](window-graphs.md) now runs one actual window
+with a single-source ordinary prefix/suffix DAG, shared quotas and atomic
+window-major drainage. Its distinct checkpoint does not change this standalone
+wire or the old ordinary graph acceptance rules.
+
 Timestamp-order buffering, sessions/merging, system/event clock parity,
-notifications, generalized window outputs, event-time joins, graph/worker/journal
-integration, window-fold CLI, external delivery and distributed progress/recovery remain open in
-the [whole-reference ledger](parity-dataflow.md). Existing runtime and journal
-wires are unchanged. The explicit FlowRecord adapter does not close those gaps.
+notifications, generalized window outputs, event-time joins, multiple
+source/window graphs, worker/journal integration, window-fold CLI, external
+delivery and distributed progress/recovery remain open in the
+[whole-reference ledger](parity-dataflow.md). The standalone FlowRecord adapter
+alone does not close any integration contract.

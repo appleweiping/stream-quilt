@@ -51,8 +51,13 @@ fold state in fixed keyed windows, advances only through explicit integer-tick
 watermarks, and uses bounded whole-window draining with checkpointable pending
 closures and EOF. Run `python -I examples/window_folds.py` from an installed
 checkout for actual temporary checkpoint files and handwritten expected rows.
-This is not timestamp-order buffering, a system clock, a journal or distributed
-execution; window-fold CLI and graph/worker integration remain open.
+The separate [window graph runtime](docs/window-graphs.md) now integrates one
+actual window node with an ordinary prefix/suffix DAG, shared callback/work/state
+budgets and atomic window-major drainage. Run `python -I examples/window_graph.py`
+for account totals with two terminal outputs and four checkpoint-file restarts.
+Neither profile provides timestamp-order buffering, a system clock, a window
+journal or distributed execution; broader graph, worker and CLI integration
+remain open.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 
@@ -119,6 +124,8 @@ The checked-in image below is a screenshot of the actual generated
   with whole-graph work limits and one internal transaction across all siblings.
 - Standalone keyed arrival-order window folds with explicit integer watermarks,
   isolated callbacks, reserved whole-window drain and strict portable restart.
+- One-window local DAGs with operator-local late handling, source-prefix progress,
+  window-major suffix transactions and separate bounded graph checkpoints.
 
 ## Installation
 

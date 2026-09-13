@@ -15,7 +15,7 @@ linear and bounded DAG operator runtimes. It does not implement a distributed da
 | `operators/__init__.py`: map/value map, filter/value filter, flat-map/batch, branch, merge, key-on/remove | Composable map/filter/flat-map/key_by/drop_key, fanout, strict boolean branching and edge-ordered merge; bounded expansion and pull-based source consumption | General batches and full cross-operator reference conformance |
 | `StatefulLogic`, `StatefulBatchLogic`, stateful map/flat-map | Per-step/per-key stateful_map and stateful_flat_map, explicit deletion/emission, ordered expansion, per-input rollback and strict portable snapshots | Stateful batch, notifications, EOF handling and partition ownership |
 | Final folds/reductions, counts, min/max, collect, cached enrichment and joins | Offline time-tolerance `join_streams`; incremental `JoinRuntime` and multi-source DAG join nodes with all nine insertion/emission combinations, explicit EOF and checkpointable final drain; local multi-source SQLite journal integration; standalone fixed keyed-window folds | Event-time join windows, general final aggregation/collection contracts; cache expiration and enrichment error handling |
-| `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation; original arrival-ordered fixed-window folds with explicit integer watermarks, bounded partial drain and strict checkpoint resume | Timestamp-order buffering, session merging, system/event clock parity, general window logic/output streams, notification, CLI and graph/worker/journal integration |
+| `operators/windowing.py`: system/event clocks, sliding/tumbling/session windowers | Event-time alignment, watermark/late policies and offline session segmentation; original arrival-ordered fixed-window folds; single-source one-window DAG execution with explicit integer watermarks, bounded partial drain and strict checkpoint resume | Timestamp-order buffering, session merging, system/event clock parity, general window logic/output streams, notifications, multiple source/window graphs, CLI and worker/journal integration |
 | `inputs.py`, `outputs.py`, file/Kafka/stdio/demo connectors | Bounded file/CloudEvents event readers; aligner/general-flow local transactional SQLite sinks | Source/sink partition protocols, external broker offsets, connector cancellation/retry, Kafka serde and broker integration verification |
 | `recovery.py`, Rust recovery implementation | Strict aligner and keyed-flow snapshots, atomic offset/state/output SQLite transactions, CAS writer conflicts; aligner restart CLI and general-flow restart API | Distributed epochs, partition migration and recovery coordination, backup/retention policy and real external source/sink delivery contracts |
 | Rust `worker.rs`, `run.rs`, `timely.rs`, `operators.rs` | Actual bounded spawn execution of key-preserving linear Flow, deterministic ingress routing, parallel all-shard dispatch, ordered candidate collection, parent-authoritative checkpoints and owned worker/transport failure cleanup | Per-stage exchange, multi-source join co-location/execution, multi-node progress, durable distributed recovery, migration/rescaling and compiled hot paths |
@@ -31,6 +31,38 @@ and the [runtime source tree](https://github.com/bytewax/bytewax/tree/9fce5b6ee4
 No upstream implementation was copied into this project. API inventory is still
 not an exhaustive reviewed contract catalogue; each row needs finer-grained
 behavioral acceptance work before it can close.
+
+## Single-source one-window graph increment
+
+The distinct [window graph runtime](window-graphs.md) now executes ordinary
+prefix operators, an actual keyed window and ordinary suffix fanout/branch/merge
+in one local runtime. Late policy belongs to the window, while source timestamp
+and position remain explicit. Window-major drainage stages all selected window
+retirements, noncommutative suffix state and terminal outputs in one transaction
+with shared callback/work/aggregate-cell budgets. A distinct bounded checkpoint
+restores open, pending, partial-EOF and closed states; old runtime and journal
+wires/acceptance remain unchanged.
+
+The [offline example](../examples/window_graph.py) checks a real account pipeline,
+two terminal outputs per window, prefix state after a window-local late drop,
+and four closed temporary checkpoint-file restarts against handwritten results.
+An independent manual graph/window interpreter reconstructs every result, state,
+counter and complete canonical checkpoint. Separate diamond tests verify that
+successful drain partitioning does not reorder downstream keyed history.
+Private standalone staging is compared against frozen signed pre-change
+transcripts across 1,112 operations. These are focused source evidence, not
+full-suite/platform/package/hosted acceptance for this increment.
+
+This work also fixes the separately demonstrated existing native output-generator
+cleanup boundary: an original control exception now survives a second cleanup
+control; a fresh cleanup control still propagates over an ordinary primary.
+This precise error correction is documented, not described as unchanged behavior.
+
+The fixed whole-reference target is unchanged. Multiple source/window graphs,
+window joins, timestamp-order buffering, sessions/merging, clocks/notifications,
+generalized window outputs, window workers/journals/CLI, external delivery and
+distributed progress/recovery remain OPEN. One integrated profile does not close
+whole-repository functional depth or scale parity.
 
 ## Standalone explicit-watermark window-fold increment
 
@@ -493,3 +525,49 @@ its checks remain active under -O. Whole-repository Ruff check/format (104 files
 strict Mypy (34 modules), Bandit and the unchanged offline 52-package environment
 pass. Package, installed-wheel and exact-head hosted results require their own
 actual acceptance and are not inferred from these source tests.
+
+## Final one-window graph acceptance
+
+The [integrated window graph](window-graphs.md) has completed independent source,
+full-regression and installed-artifact checks. Its standalone staging extraction
+matches 24 complete signed-old traces (1,112 operations), including callback
+order, exceptions, output and canonical checkpoint bytes. A separate genuine
+old output-generator control-priority defect was corrected explicitly; this is
+not described as unchanged behavior at that previously defective boundary.
+
+Final Windows CPython **3.12.13** full coverage passed **2,290 tests**, with one
+existing Python-version skip for generator.close return values, in **1,567.89s**.
+Branch-inclusive coverage was **96.9727%** (7,881/8,060 statements and 2,722/2,874
+branches), preserving the 95% gate and existing exclusions. ResourceWarning and
+RuntimeWarning were errors; all 137 delivery files were unchanged. The new 299
+tests also passed on Windows CPython **3.14.5**, no skips, in **142.57s**.
+
+The measured full run took approximately 26 minutes; CI now allows 45 minutes
+instead of 15 for setup, the complete suite and artifacts. No matrix job, test,
+coverage threshold or verification step was removed. Only this timeout budget,
+new example Markdown formatting, changelog and final acceptance prose followed
+the source freeze; runtime/test bytes did not change.
+
+Independent installed-wheel checks used a fresh Windows **3.14.5** environment
+and a fresh offline Linux **3.12.3** environment, each installing only this local
+wheel and interpreter-bundled packaging support. On each platform, **30 distinct
+independent cases** passed both normal and optimized execution: nine enumerated
+interval/DAG/drain-partition cases, six transaction/resource/progress cases, and
+15 wire/numeric cases. Repetition on two platforms/modes does not make these 120
+distinct cases or a Linux full-suite/coverage result.
+
+Both platforms also ran the real temporary-file example under `-I` and `-I -O`:
+eight complete handwritten outputs, eight source inputs, 14 operations and four
+actual checkpoint-file restores, followed by closed state and zero retained
+windows. All 137 source, 37 installed runtime and 513 Windows/552 Linux
+non-bytecode site-package files remained unchanged. Every runtime import came
+from its isolated installation, with no editable source path.
+
+Whole Ruff/format, strict Mypy, Bandit, sdist-to-wheel build, strict Twine and
+wheel-content checks passed. Complete source/archive/installed audits matched
+37 runtime, four metadata and 128 sdist source files; an independent audit
+verified all 42 wheel RECORD entries. Final prose is followed by another
+distribution rebuild and byte audit; hosted checks are separate exact-head
+obligations. Multiple-source/window graphs, joins/sessions, clocks, notifications,
+workers, durable window journals and external/distributed delivery remain open.
+Whole-reference functionality and substantive-scale parity are not complete.

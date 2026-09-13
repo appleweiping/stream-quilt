@@ -104,6 +104,15 @@ from stream_quilt.window_fold import (
     WindowRow,
     WindowStatus,
 )
+from stream_quilt.window_graph import (
+    FlowWindow,
+    WindowGraphBatch,
+    WindowGraphDataflow,
+    WindowGraphInput,
+    WindowGraphLimits,
+    WindowGraphRuntime,
+)
+from stream_quilt.window_graph_checkpoint import WindowGraphCheckpoint
 
 __all__ = [
     "AlignedWindow",
@@ -129,6 +138,7 @@ __all__ = [
     "FlowRecoveryPoint",
     "FlowRuntime",
     "FlowStep",
+    "FlowWindow",
     "Gap",
     "GraphCheckpoint",
     "GraphDataflow",
@@ -202,6 +212,12 @@ __all__ = [
     "WindowFoldExecutionError",
     "WindowFoldLimits",
     "WindowFoldRuntime",
+    "WindowGraphBatch",
+    "WindowGraphCheckpoint",
+    "WindowGraphDataflow",
+    "WindowGraphInput",
+    "WindowGraphLimits",
+    "WindowGraphRuntime",
     "WindowProcessResult",
     "WindowRow",
     "WindowStatus",

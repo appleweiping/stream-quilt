@@ -360,8 +360,10 @@ def _flat_values(values: Any) -> Iterator[Callable[[], Iterator[Any]]]:
                 # earlier typing stubs describe only None. Inspect either case.
                 returned = cast(Callable[[], Any], owner.close)()
                 _no_awaitable(returned)
-            except Exception as cleanup:
-                if primary is None:
+            except BaseException as cleanup:
+                if primary is None or (
+                    isinstance(primary, Exception) and not isinstance(cleanup, Exception)
+                ):
                     raise
                 primary.add_note(f"output generator cleanup also failed: {type(cleanup).__name__}")
 

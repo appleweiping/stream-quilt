@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- [WindowGraphRuntime](docs/window-graphs.md) integrates ordinary prefix/suffix
+  operators with one keyed window in a bounded single-source DAG. Explicit
+  watermark/EOF progress and window-major drainage publish all window and
+  downstream state atomically. A distinct checkpoint supports partial drainage
+  and restart while old runtime/journal wires remain unchanged. Multiple windows,
+  workers, journals and distributed window progress remain separate work.
+- Native output-generator cleanup preserves an original control exception when
+  a secondary cleanup control occurs; a cleanup control still takes precedence
+  over an ordinary primary failure.
 - [WindowFoldRuntime](docs/window-folds.md) adds original fixed keyed-window folds
   in arrival order, explicit integer-tick watermarks, late reject/drop, accounted
   gaps and permanent EOF. Whole-window drain reserves bounded output before

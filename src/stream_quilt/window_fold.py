@@ -431,6 +431,202 @@ def _invoke(function: Callable[..., Any], phase: str, key: str, index: int, *arg
         raise WindowFoldExecutionError(phase, key, index) from exc
 
 
+@dataclass(frozen=True, slots=True)
+class _StageHooks:
+    """Private unpublished admission/row seams, never a public callback loader."""
+
+    before_call: Callable[[str, str, int], None] | None = None
+    reserve_cells: Callable[[tuple[_Cell, ...], int], None] | None = None
+    admit_cell: Callable[[_Cell], None] | None = None
+    on_row: Callable[[WindowRow], None] | None = None
+
+
+def _stage_call(
+    hooks: _StageHooks | None,
+    function: Callable[..., Any],
+    phase: str,
+    key: str,
+    index: int,
+    *args: Any,
+) -> Any:
+    if hooks is not None and hooks.before_call is not None:
+        hooks.before_call(phase, key, index)
+    return _invoke(function, phase, key, index, *args)
+
+
+def _stage_process(
+    spec: WindowFold,
+    before: _State,
+    timestamp: int,
+    record: FlowRecord,
+    *,
+    hooks: _StageHooks | None = None,
+) -> tuple[_State, WindowProcessResult]:
+    if _status(before).phase != "open":
+        raise ValidationError("window input requires open, non-draining state")
+    _tick(timestamp, "input timestamp")
+    if type(record) is not FlowRecord or record.key is None:
+        raise ValidationError("window inputs require keyed FlowRecord")
+    key = _name(record.key, "input key")
+    encoded = _checked_value(record._json, spec.limits.max_input_bytes)
+    late = before.watermark is not None and timestamp < before.watermark
+    if late and spec.late_policy == "reject":
+        raise ValidationError("window input precedes the watermark")
+    processed = _count(before.processed_inputs + 1, "processed inputs", 0, spec.limits.max_inputs)
+    if late:
+        after = replace(before, processed_inputs=processed, late_drops=before.late_drops + 1)
+        result = WindowProcessResult("late_dropped", 0, _status(after))
+    else:
+        after, result = _stage_fold(spec, before, timestamp, key, encoded, processed, hooks=hooks)
+    return after, result
+
+
+def _stage_fold(
+    spec: WindowFold,
+    before: _State,
+    timestamp: int,
+    key: str,
+    encoded: str,
+    processed: int,
+    *,
+    hooks: _StageHooks | None = None,
+) -> tuple[_State, WindowProcessResult]:
+    limits = spec.limits
+    hop = cast(int, spec.hop)
+    first = (timestamp - spec.origin - spec.width) // hop + 1
+    last = (timestamp - spec.origin) // hop
+    count = max(0, last - first + 1)
+    _count(count, "input window membership", 0, limits.max_windows_per_input)
+    if not count:
+        after = replace(before, processed_inputs=processed, gap_inputs=before.gap_inputs + 1)
+        return after, WindowProcessResult("gap", 0, _status(after))
+    for index in range(first, last + 1):
+        _geometry(spec, index)
+    identities = tuple((index, key) for index in range(first, last + 1))
+    new = sum(identity not in before.cells for identity in identities)
+    _count(len(before.cells) + new, "retained windows", 0, limits.max_windows)
+    keys = {cell.key for cell in before.cells.values()}
+    _count(len(keys) + (key not in keys), "retained window keys", 0, limits.max_keys)
+    updates = _count(before.membership_updates + count, "membership updates", 0, _MAX_COUNT)
+    created = _count(before.created_windows + new, "created windows", 0, _MAX_COUNT)
+    for identity in identities:
+        previous = before.cells.get(identity)
+        _count((previous.input_count if previous else 0) + 1, "window input count", 1, _MAX_COUNT)
+    cells = dict(before.cells)
+    # Remove all touched old costs first; a later shrinking sibling must not
+    # make an otherwise-admissible final transaction fail a prefix budget.
+    size = before.byte_size - sum(
+        before.cells[identity].byte_size for identity in identities if identity in before.cells
+    )
+    if hooks is not None and hooks.reserve_cells is not None:
+        hooks.reserve_cells(
+            tuple(before.cells[item] for item in identities if item in before.cells), count
+        )
+    for index, _key_value in identities:
+        previous = before.cells.get((index, key))
+        if previous is None:
+            initial = _stage_call(hooks, spec.initial, "initial", key, index)
+            state = json.loads(_snapshot(initial, limits.max_state_value_bytes))
+        else:
+            state = json.loads(previous.encoded)
+        value = _stage_call(hooks, spec.fold, "fold", key, index, state, json.loads(encoded))
+        saved = _snapshot(value, limits.max_state_value_bytes)
+        proposed = _cell(spec, key, index, (previous.input_count if previous else 0) + 1, saved)
+        size += proposed.byte_size
+        if size > limits.max_state_bytes:
+            raise ValidationError("window aggregate cell-wire byte limit exceeded")
+        if hooks is not None and hooks.admit_cell is not None:
+            hooks.admit_cell(proposed)
+        cells[index, key] = proposed
+    after = replace(
+        before,
+        cells=cells,
+        processed_inputs=processed,
+        membership_updates=updates,
+        created_windows=created,
+        byte_size=size,
+    )
+    return after, WindowProcessResult("folded", count, _status(after))
+
+
+def _stage_advance(before: _State, timestamp: int) -> tuple[_State, WindowStatus]:
+    _tick(timestamp, "watermark")
+    if _status(before).phase != "open":
+        raise ValidationError("watermark advancement requires open state")
+    if before.watermark is not None and timestamp < before.watermark:
+        raise ValidationError("watermark must not regress")
+    after = replace(before, watermark=timestamp)
+    result = _status(after)
+    return after, result
+
+
+def _stage_finish(before: _State) -> tuple[_State, WindowStatus]:
+    after = replace(before, finished=True)
+    result = _status(after)
+    return after, result
+
+
+def _stage_drain(
+    spec: WindowFold,
+    before: _State,
+    *,
+    max_windows: int,
+    hooks: _StageHooks | None = None,
+) -> tuple[_State, WindowBatch]:
+    _count(max_windows, "drain max_windows", 1, _CEILINGS["max_windows"])
+    limits = spec.limits
+    cap = min(
+        max_windows,
+        limits.max_rows_per_batch,
+        limits.max_batch_bytes // limits.max_row_bytes,
+    )
+    selected = sorted(
+        identity for identity, cell in before.cells.items() if _eligible(before, cell)
+    )[:cap]
+    emitted = _count(before.emitted_windows + len(selected), "emitted windows", 0, _MAX_COUNT)
+    consumed = sum(before.cells[identity].input_count for identity in selected)
+    finalized = _count(
+        before.finalized_memberships + consumed, "finalized memberships", 0, _MAX_COUNT
+    )
+    if hooks is not None and hooks.reserve_cells is not None:
+        hooks.reserve_cells(tuple(before.cells[item] for item in selected), 0)
+    rows: list[WindowRow] = []
+    for identity in selected:
+        cell = before.cells[identity]
+        value = json.loads(cell.encoded)
+        if spec.finalize is not None:
+            value = _stage_call(hooks, spec.finalize, "finalize", cell.key, cell.index, value)
+        row = WindowRow(
+            cell.key,
+            cell.index,
+            cell.start,
+            cell.end,
+            spec.tick_unit,
+            cell.input_count,
+            value,
+        )
+        if row.byte_size > limits.max_row_bytes:
+            raise ValidationError("window finalizer output exceeds row byte limit")
+        if hooks is not None and hooks.on_row is not None:
+            hooks.on_row(row)
+        rows.append(row)
+    if sum(row.byte_size for row in rows) > limits.max_batch_bytes:
+        raise ValidationError("window drain exceeds aggregate row byte limit")
+    cells = dict(before.cells)
+    size = before.byte_size
+    for identity in selected:
+        size -= cells.pop(identity).byte_size
+    after = replace(
+        before,
+        cells=cells,
+        byte_size=size,
+        emitted_windows=emitted,
+        finalized_memberships=finalized,
+    )
+    result = WindowBatch(tuple(rows), _status(after))
+    return after, result
+
+
 class WindowFoldRuntime:
     """Single-owner explicit progress; each public operation publishes once."""
 
@@ -462,157 +658,25 @@ class WindowFoldRuntime:
 
     def process(self, timestamp: int, record: FlowRecord) -> WindowProcessResult:
         with self._operation():
-            before, spec = self._state, self.spec
-            if _status(before).phase != "open":
-                raise ValidationError("window input requires open, non-draining state")
-            _tick(timestamp, "input timestamp")
-            if type(record) is not FlowRecord or record.key is None:
-                raise ValidationError("window inputs require keyed FlowRecord")
-            key = _name(record.key, "input key")
-            encoded = _checked_value(record._json, spec.limits.max_input_bytes)
-            late = before.watermark is not None and timestamp < before.watermark
-            if late and spec.late_policy == "reject":
-                raise ValidationError("window input precedes the watermark")
-            processed = _count(
-                before.processed_inputs + 1, "processed inputs", 0, spec.limits.max_inputs
-            )
-            if late:
-                after = replace(
-                    before, processed_inputs=processed, late_drops=before.late_drops + 1
-                )
-                result = WindowProcessResult("late_dropped", 0, _status(after))
-            else:
-                after, result = self._fold(before, timestamp, key, encoded, processed)
+            after, result = _stage_process(self.spec, self._state, timestamp, record)
             self._state = after
             return result
 
-    def _fold(
-        self, before: _State, timestamp: int, key: str, encoded: str, processed: int
-    ) -> tuple[_State, WindowProcessResult]:
-        spec, limits = self.spec, self.spec.limits
-        hop = cast(int, spec.hop)
-        first = (timestamp - spec.origin - spec.width) // hop + 1
-        last = (timestamp - spec.origin) // hop
-        count = max(0, last - first + 1)
-        _count(count, "input window membership", 0, limits.max_windows_per_input)
-        if not count:
-            after = replace(before, processed_inputs=processed, gap_inputs=before.gap_inputs + 1)
-            return after, WindowProcessResult("gap", 0, _status(after))
-        for index in range(first, last + 1):
-            _geometry(spec, index)
-        identities = tuple((index, key) for index in range(first, last + 1))
-        new = sum(identity not in before.cells for identity in identities)
-        _count(len(before.cells) + new, "retained windows", 0, limits.max_windows)
-        keys = {cell.key for cell in before.cells.values()}
-        _count(len(keys) + (key not in keys), "retained window keys", 0, limits.max_keys)
-        updates = _count(before.membership_updates + count, "membership updates", 0, _MAX_COUNT)
-        created = _count(before.created_windows + new, "created windows", 0, _MAX_COUNT)
-        for identity in identities:
-            previous = before.cells.get(identity)
-            _count(
-                (previous.input_count if previous else 0) + 1, "window input count", 1, _MAX_COUNT
-            )
-        cells = dict(before.cells)
-        # Remove all touched old costs first; a later shrinking sibling must not
-        # make an otherwise-admissible final transaction fail a prefix budget.
-        size = before.byte_size - sum(
-            before.cells[identity].byte_size for identity in identities if identity in before.cells
-        )
-        for index, _key_value in identities:
-            previous = before.cells.get((index, key))
-            if previous is None:
-                initial = _invoke(spec.initial, "initial", key, index)
-                state = json.loads(_snapshot(initial, limits.max_state_value_bytes))
-            else:
-                state = json.loads(previous.encoded)
-            value = _invoke(spec.fold, "fold", key, index, state, json.loads(encoded))
-            saved = _snapshot(value, limits.max_state_value_bytes)
-            proposed = _cell(spec, key, index, (previous.input_count if previous else 0) + 1, saved)
-            size += proposed.byte_size
-            if size > limits.max_state_bytes:
-                raise ValidationError("window aggregate cell-wire byte limit exceeded")
-            cells[index, key] = proposed
-        after = replace(
-            before,
-            cells=cells,
-            processed_inputs=processed,
-            membership_updates=updates,
-            created_windows=created,
-            byte_size=size,
-        )
-        return after, WindowProcessResult("folded", count, _status(after))
-
     def advance_watermark(self, timestamp: int) -> WindowStatus:
         with self._operation():
-            _tick(timestamp, "watermark")
-            before = self._state
-            if _status(before).phase != "open":
-                raise ValidationError("watermark advancement requires open state")
-            if before.watermark is not None and timestamp < before.watermark:
-                raise ValidationError("watermark must not regress")
-            after = replace(before, watermark=timestamp)
-            result = _status(after)
+            after, result = _stage_advance(self._state, timestamp)
             self._state = after
             return result
 
     def finish(self) -> WindowStatus:
         with self._operation():
-            after = replace(self._state, finished=True)
-            result = _status(after)
+            after, result = _stage_finish(self._state)
             self._state = after
             return result
 
     def drain(self, *, max_windows: int = 100) -> WindowBatch:
         with self._operation():
-            _count(max_windows, "drain max_windows", 1, _CEILINGS["max_windows"])
-            before, limits = self._state, self.spec.limits
-            cap = min(
-                max_windows,
-                limits.max_rows_per_batch,
-                limits.max_batch_bytes // limits.max_row_bytes,
-            )
-            selected = sorted(
-                identity for identity, cell in before.cells.items() if _eligible(before, cell)
-            )[:cap]
-            emitted = _count(
-                before.emitted_windows + len(selected), "emitted windows", 0, _MAX_COUNT
-            )
-            consumed = sum(before.cells[identity].input_count for identity in selected)
-            finalized = _count(
-                before.finalized_memberships + consumed, "finalized memberships", 0, _MAX_COUNT
-            )
-            rows: list[WindowRow] = []
-            for identity in selected:
-                cell = before.cells[identity]
-                value = json.loads(cell.encoded)
-                if self.spec.finalize is not None:
-                    value = _invoke(self.spec.finalize, "finalize", cell.key, cell.index, value)
-                row = WindowRow(
-                    cell.key,
-                    cell.index,
-                    cell.start,
-                    cell.end,
-                    self.spec.tick_unit,
-                    cell.input_count,
-                    value,
-                )
-                if row.byte_size > limits.max_row_bytes:
-                    raise ValidationError("window finalizer output exceeds row byte limit")
-                rows.append(row)
-            if sum(row.byte_size for row in rows) > limits.max_batch_bytes:
-                raise ValidationError("window drain exceeds aggregate row byte limit")
-            cells = dict(before.cells)
-            size = before.byte_size
-            for identity in selected:
-                size -= cells.pop(identity).byte_size
-            after = replace(
-                before,
-                cells=cells,
-                byte_size=size,
-                emitted_windows=emitted,
-                finalized_memberships=finalized,
-            )
-            result = WindowBatch(tuple(rows), _status(after))
+            after, result = _stage_drain(self.spec, self._state, max_windows=max_windows)
             self._state = after
             return result
 
