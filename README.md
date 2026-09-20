@@ -55,9 +55,12 @@ The separate [window graph runtime](docs/window-graphs.md) now integrates one
 actual window node with an ordinary prefix/suffix DAG, shared callback/work/state
 budgets and atomic window-major drainage. Run `python -I examples/window_graph.py`
 for account totals with two terminal outputs and four checkpoint-file restarts.
-Neither profile provides timestamp-order buffering, a system clock, a window
-journal or distributed execution; broader graph, worker and CLI integration
-remain open.
+The distinct [durable window graph journal](docs/window-graph-journal.md)
+publishes explicit source/watermark/EOF progress, complete window and ordinary
+state, and terminal outputs atomically in local SQLite. Run
+`python -I examples/durable_window_graph.py` for retained request receipts and
+fixed-prefix output cursors. These profiles do not provide timestamp-order
+buffering, a system clock, distributed execution or external sink transactions.
 
 **Deterministic event-time alignment for video, audio, text, sensor, and custom streams.**
 

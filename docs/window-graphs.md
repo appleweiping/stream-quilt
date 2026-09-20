@@ -217,6 +217,11 @@ detached document; `to_json()` returns canonical UTF-8-compatible text.
 application's matching callbacks/revisions. Open, pending, partial-EOF and closed
 states all restore without executing callbacks.
 
+For one-machine atomic SQLite publication of source progress, this full graph
+checkpoint, explicit watermark/finish/drain operations and terminal outputs,
+see the separate [WindowGraphJournal](window-graph-journal.md). File snapshots
+in the runtime example are not atomic operation receipts.
+
 The closed envelope is `{body, sha256}`. Body kind is
 `stream-quilt-window-graph-checkpoint`, version `1.0`; configuration has distinct
 kind `stream-quilt-window-graph` and explicit arrival/source-preserved/window-major

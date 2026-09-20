@@ -15,9 +15,9 @@ jobs:
   quality:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
-    # The complete branch-coverage suite takes about 26 minutes on local Windows.
+    # The complete branch-coverage suite took 44m58s on local Windows (2026-09-19).
     # Keep every test and gate; allow room for setup and artifact validation.
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

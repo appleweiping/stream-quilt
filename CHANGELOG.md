@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- [WindowGraphJournal](docs/window-graph-journal.md) adds a distinct bounded
+  SQLite request/operation/output protocol for one explicit-watermark window
+  graph. Whole-head CAS makes local source progress, ordinary/window state and
+  terminal output publication atomic; retained receipts resolve lost responses,
+  and fixed-prefix cursors do not acknowledge a sink. No-op requests are not
+  persisted, and callback/external effects are not exactly-once.
 - [WindowGraphRuntime](docs/window-graphs.md) integrates ordinary prefix/suffix
   operators with one keyed window in a bounded single-source DAG. Explicit
   watermark/EOF progress and window-major drainage publish all window and

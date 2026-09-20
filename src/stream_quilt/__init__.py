@@ -113,6 +113,19 @@ from stream_quilt.window_graph import (
     WindowGraphRuntime,
 )
 from stream_quilt.window_graph_checkpoint import WindowGraphCheckpoint
+from stream_quilt.window_journal import WindowGraphJournal
+from stream_quilt.window_journal_types import (
+    WindowGraphDrain,
+    WindowGraphFinish,
+    WindowGraphJournalOutput,
+    WindowGraphOperation,
+    WindowGraphOutputCursor,
+    WindowGraphOutputPage,
+    WindowGraphReceipt,
+    WindowGraphRecoveryPoint,
+    WindowGraphRequest,
+    WindowGraphWatermark,
+)
 
 __all__ = [
     "AlignedWindow",
@@ -215,9 +228,20 @@ __all__ = [
     "WindowGraphBatch",
     "WindowGraphCheckpoint",
     "WindowGraphDataflow",
+    "WindowGraphDrain",
+    "WindowGraphFinish",
     "WindowGraphInput",
+    "WindowGraphJournal",
+    "WindowGraphJournalOutput",
     "WindowGraphLimits",
+    "WindowGraphOperation",
+    "WindowGraphOutputCursor",
+    "WindowGraphOutputPage",
+    "WindowGraphReceipt",
+    "WindowGraphRecoveryPoint",
+    "WindowGraphRequest",
     "WindowGraphRuntime",
+    "WindowGraphWatermark",
     "WindowProcessResult",
     "WindowRow",
     "WindowStatus",
