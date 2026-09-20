@@ -45,6 +45,10 @@ lost commit acknowledgement, and detached cursors read a fixed output prefix.
 Run `python examples/durable_partitioned_totals.py` for a real-worker SQLite
 restart and independently calculated keyed totals. Callback execution and
 external effects remain outside publication idempotency.
+The bounded [local file connector](docs/file-connectors.md) stages one strict
+keyed JSONL source for exact-position replay and materializes an idempotent
+atomic-replacement output snapshot; it does not provide broker delivery or
+distributed source/sink coordination.
 
 The standalone [window-fold runtime](docs/window-folds.md) retains arrival-ordered
 fold state in fixed keyed windows, advances only through explicit integer-tick
