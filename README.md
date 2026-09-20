@@ -55,6 +55,11 @@ fold state in fixed keyed windows, advances only through explicit integer-tick
 watermarks, and uses bounded whole-window draining with checkpointable pending
 closures and EOF. Run `python -I examples/window_folds.py` from an installed
 checkout for actual temporary checkpoint files and handwritten expected rows.
+The separate [ordered window fold](docs/ordered-window-folds.md) buffers at most
+1,000 keyed source records and applies each explicit watermark release in stable
+timestamp/source-position order. Its strict `< watermark` boundary is intentional;
+it is not a Bytewax-compatible `<= watermark` operator. See
+`examples/ordered_window_folds.py` for a checkpoint/resume walkthrough.
 The separate [window graph runtime](docs/window-graphs.md) now integrates one
 actual window node with an ordinary prefix/suffix DAG, shared callback/work/state
 budgets and atomic window-major drainage. Run `python -I examples/window_graph.py`

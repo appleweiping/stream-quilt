@@ -71,6 +71,15 @@ from stream_quilt.multi_journal import (
     MultiGraphRecoveryPoint,
     MultiGraphRequest,
 )
+from stream_quilt.ordered_window import (
+    OrderedWindowAdmission,
+    OrderedWindowCheckpoint,
+    OrderedWindowEffect,
+    OrderedWindowFoldRuntime,
+    OrderedWindowLimits,
+    OrderedWindowRelease,
+    OrderedWindowStatus,
+)
 from stream_quilt.partition import PartitionedEvents, partition_events
 from stream_quilt.partitioned_flow import (
     LocalPartitionedFlow,
@@ -193,6 +202,13 @@ __all__ = [
     "MultiGraphRequest",
     "MultiGraphRuntime",
     "OffsetEstimate",
+    "OrderedWindowAdmission",
+    "OrderedWindowCheckpoint",
+    "OrderedWindowEffect",
+    "OrderedWindowFoldRuntime",
+    "OrderedWindowLimits",
+    "OrderedWindowRelease",
+    "OrderedWindowStatus",
     "OutputError",
     "PartitionedEvents",
     "PartitionedFlowBatch",
