@@ -8,7 +8,9 @@ starts workers under `if __name__ == "__main__":` for Windows `spawn`.
 ```python
 from stream_quilt import PartitionedFlowJournal
 from stream_quilt.connectors.files import (
-    StagedJsonlSource, materialize_file, run_file_journal,
+    StagedJsonlSource,
+    materialize_file,
+    run_file_journal,
 )
 
 source = StagedJsonlSource.stage(input_root, "rows.jsonl", private_root, "orders-v1")
@@ -27,7 +29,10 @@ source = StagedJsonlSource.restore(
     private_root, "rows.jsonl", journal_source_id, journal_source_digest
 )
 journal = PartitionedFlowJournal(
-    private_root / "run.db", flow, source.source_id, source.source_digest,
+    private_root / "run.db",
+    flow,
+    source.source_id,
+    source.source_digest,
     create=False,
 )
 run_file_journal(source, journal, max_new_inputs=100_000)
