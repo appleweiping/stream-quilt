@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling==1.32.0"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -34,7 +34,7 @@ dev = [
   "build>=1.2",
   "check-wheel-contents>=0.6",
   "coverage[toml]>=7.6",
-  "hatchling==1.32.0",
+  "hatchling==1.33.0",
   "mypy>=1.15",
   "pytest>=8",
   "ruff>=0.8",
